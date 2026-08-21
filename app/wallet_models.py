@@ -52,5 +52,12 @@ class Wallet(Base):
         cascade="all, delete-orphan",
     )
 
+    transactions = relationship(
+        "Transaction",
+        back_populates="wallet",
+        cascade="all, delete-orphan",
+    )
+
 
 from app.balance_models import Balance
+from app.transaction_models import Transaction
