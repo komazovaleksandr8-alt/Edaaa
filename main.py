@@ -1,12 +1,27 @@
+import secrets
+
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from app.auth import hash_password
+from app.auth import (
+    create_access_token,
+    decode_access_token,
+    hash_password,
+    verify_password,
+)
 from app.database import get_db
 from app.init_db import init_database
 from app.models import User
-from app.schemas import RegisterRequest, UserResponse
+from app.schemas import (
+    LoginRequest,
+    RegisterRequest,
+    TokenResponse,
+    UserResponse,
+    WalletResponse,
+)
+from app.wallet_models import Wallet
 
 
 app = FastAPI(
@@ -23,6 +38,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+security = HTTPBearer()
 
 
 @app.on_event("startup")
@@ -68,15 +86,145 @@ def register(
             detail="A user with this email already exists.",
         )
 
-    password_hash = hash_password(data.password)
-
     user = User(
         email=data.email,
-        password_hash=password_hash,
+        password_hash=hash_password(data.password),
     )
 
     db.add(user)
+    db.flush()
+
+    wallet = Wallet(
+        user_id=user.id,
+        address=f"edaaa_{secrets.token_hex(20)}",
+        network="ethereum",
+    )
+
+    db.add(wallet)
     db.commit()
     db.refresh(user)
 
     return user
+
+
+@app.post(
+    "/login",
+    response_model=TokenResponse,
+)
+def login(
+    data: LoginRequest,
+    db: Session = Depends(get_db),
+):
+    user = (
+        db.query(User)
+        .filter(User.email == data.email)
+        .first()
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        )
+
+    if not verify_password(
+        data.password,
+        user.password_hash,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive.",
+        )
+
+    token = create_access_token(
+        {"sub": str(user.id)}
+    )
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+    }
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+):
+    try:
+        payload = decode_access_token(
+            credentials.credentials
+        )
+
+        user_id = payload.get("sub")
+
+        if not user_id:
+            raise ValueError("Missing subject")
+
+        user_id = int(user_id)
+
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = (
+        db.query(User)
+        .filter(User.id == user_id)
+        .first()
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive.",
+        )
+
+    return user
+
+
+@app.get(
+    "/me",
+    response_model=UserResponse,
+)
+def me(
+    current_user: User = Depends(get_current_user),
+):
+    return current_user
+
+
+@app.get(
+    "/wallet",
+    response_model=WalletResponse,
+)
+def wallet(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    wallet = (
+        db.query(Wallet)
+        .filter(Wallet.user_id == current_user.id)
+        .first()
+    )
+
+    if not wallet:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wallet not found.",
+        )
+
+    return wallet
