@@ -13,3 +13,23 @@ class UserResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class WalletResponse(BaseModel):
+    id: int
+    user_id: int
+    address: str
+    network: str
+
+    class Config:
+        from_attributes = True
