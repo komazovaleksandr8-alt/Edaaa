@@ -9,15 +9,9 @@ from app.transaction_models import Transaction
 
 
 def init_database():
-    # Создаём отсутствующие таблицы.
-    # Существующие таблицы и данные не удаляются.
     Base.metadata.create_all(bind=engine)
 
     with engine.begin() as connection:
-
-        # =========================
-        # POSTGRESQL
-        # =========================
 
         if engine.dialect.name == "postgresql":
             connection.execute(
@@ -29,10 +23,6 @@ def init_database():
                     """
                 )
             )
-
-        # =========================
-        # SQLITE
-        # =========================
 
         elif engine.dialect.name == "sqlite":
             result = connection.execute(
@@ -55,16 +45,12 @@ def init_database():
                     )
                 )
 
-        # =========================
-        # MAKE ADMIN
-        # =========================
-
         connection.execute(
             text(
                 """
                 UPDATE users
                 SET is_admin = TRUE
-                WHERE email = :email
+                WHERE LOWER(email) = LOWER(:email)
                 """
             ),
             {
