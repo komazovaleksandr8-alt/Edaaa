@@ -1,8 +1,10 @@
 import secrets
+from decimal import Decimal
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.auth import (
@@ -31,7 +33,7 @@ from app.transaction_models import Transaction
 app = FastAPI(
     title="Edaaa Wallet",
     description="Edaaa Cryptocurrency Wallet API",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 
@@ -47,19 +49,49 @@ app.add_middleware(
 security = HTTPBearer()
 
 
+# =========================
+# ADMIN DEPOSIT SCHEMA
+# =========================
+
+class AdminDepositRequest(BaseModel):
+    user_id: int = Field(
+        ...,
+        gt=0,
+        description="ID пользователя, которому зачисляются USDT",
+    )
+
+    amount: Decimal = Field(
+        ...,
+        gt=0,
+        description="Количество USDT для зачисления",
+    )
+
+
+# =========================
+# STARTUP
+# =========================
+
 @app.on_event("startup")
 def startup():
     init_database()
 
+
+# =========================
+# ROOT
+# =========================
 
 @app.get("/")
 def root():
     return {
         "status": "ok",
         "message": "Edaaa Wallet API is running",
-        "version": "0.3.0",
+        "version": "0.4.0",
     }
 
+
+# =========================
+# HEALTH
+# =========================
 
 @app.get("/health")
 def health():
@@ -68,6 +100,10 @@ def health():
         "database": "initialized",
     }
 
+
+# =========================
+# REGISTER
+# =========================
 
 @app.post(
     "/register",
@@ -93,6 +129,7 @@ def register(
     user = User(
         email=data.email,
         password_hash=hash_password(data.password),
+        is_admin=False,
     )
 
     db.add(user)
@@ -110,7 +147,7 @@ def register(
     balance = Balance(
         wallet_id=wallet.id,
         asset="USDT",
-        amount=0,
+        amount=Decimal("0"),
     )
 
     db.add(balance)
@@ -120,6 +157,10 @@ def register(
 
     return user
 
+
+# =========================
+# LOGIN
+# =========================
 
 @app.post(
     "/login",
@@ -157,7 +198,9 @@ def login(
         )
 
     token = create_access_token(
-        {"sub": str(user.id)}
+        {
+            "sub": str(user.id)
+        }
     )
 
     return {
@@ -165,6 +208,10 @@ def login(
         "token_type": "bearer",
     }
 
+
+# =========================
+# CURRENT USER
+# =========================
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -186,7 +233,9 @@ def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token.",
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={
+                "WWW-Authenticate": "Bearer"
+            },
         )
 
     user = (
@@ -199,7 +248,9 @@ def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found.",
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={
+                "WWW-Authenticate": "Bearer"
+            },
         )
 
     if not user.is_active:
@@ -211,6 +262,26 @@ def get_current_user(
     return user
 
 
+# =========================
+# ADMIN CHECK
+# =========================
+
+def get_current_admin(
+    current_user: User = Depends(get_current_user),
+):
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required.",
+        )
+
+    return current_user
+
+
+# =========================
+# ME
+# =========================
+
 @app.get(
     "/me",
     response_model=UserResponse,
@@ -220,6 +291,10 @@ def me(
 ):
     return current_user
 
+
+# =========================
+# WALLET
+# =========================
 
 @app.get(
     "/wallet",
@@ -243,6 +318,10 @@ def wallet(
 
     return wallet
 
+
+# =========================
+# WALLET BALANCE
+# =========================
 
 @app.get(
     "/wallet/balance",
@@ -282,6 +361,10 @@ def wallet_balance(
     return balance
 
 
+# =========================
+# WALLET TRANSACTIONS
+# =========================
+
 @app.get(
     "/wallet/transactions",
     response_model=list[TransactionResponse],
@@ -304,9 +387,133 @@ def wallet_transactions(
 
     transactions = (
         db.query(Transaction)
-        .filter(Transaction.wallet_id == wallet.id)
-        .order_by(Transaction.created_at.desc())
+        .filter(
+            Transaction.wallet_id == wallet.id
+        )
+        .order_by(
+            Transaction.created_at.desc()
+        )
         .all()
     )
 
     return transactions
+
+
+# =========================
+# ADMIN DEPOSIT
+# =========================
+
+@app.post(
+    "/admin/deposit",
+    response_model=TransactionResponse,
+)
+def admin_deposit(
+    data: AdminDepositRequest,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    # =========================
+    # FIND USER
+    # =========================
+
+    user = (
+        db.query(User)
+        .filter(User.id == data.user_id)
+        .first()
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+
+    # =========================
+    # FIND WALLET
+    # =========================
+
+    wallet = (
+        db.query(Wallet)
+        .filter(
+            Wallet.user_id == user.id
+        )
+        .first()
+    )
+
+    if not wallet:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wallet not found.",
+        )
+
+    # =========================
+    # FIND USDT BALANCE
+    # =========================
+
+    balance = (
+        db.query(Balance)
+        .filter(
+            Balance.wallet_id == wallet.id,
+            Balance.asset == "USDT",
+        )
+        .first()
+    )
+
+    if not balance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="USDT balance not found.",
+        )
+
+    # =========================
+    # VALIDATE AMOUNT
+    # =========================
+
+    amount = Decimal(data.amount)
+
+    if amount <= Decimal("0"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Deposit amount must be greater than zero.",
+        )
+
+    # =========================
+    # UPDATE BALANCE
+    # =========================
+
+    balance.amount = (
+        Decimal(balance.amount) + amount
+    )
+
+    # =========================
+    # CREATE TRANSACTION
+    # =========================
+
+    transaction = Transaction(
+        wallet_id=wallet.id,
+        type="deposit",
+        asset="USDT",
+        amount=amount,
+        status="completed",
+        tx_hash=None,
+    )
+
+    db.add(transaction)
+
+    # =========================
+    # SAVE
+    # =========================
+
+    try:
+        db.commit()
+        db.refresh(transaction)
+
+    except Exception:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process deposit.",
+        )
+
+    return transaction
