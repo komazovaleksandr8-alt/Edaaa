@@ -9,7 +9,11 @@ from app.database import Base
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
 
     email = Column(
         String(255),
@@ -40,3 +44,6 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+
+
+from app.wallet_models import Wallet
