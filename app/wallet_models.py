@@ -45,3 +45,12 @@ class Wallet(Base):
         "User",
         back_populates="wallets",
     )
+
+    balances = relationship(
+        "Balance",
+        back_populates="wallet",
+        cascade="all, delete-orphan",
+    )
+
+
+from app.balance_models import Balance
