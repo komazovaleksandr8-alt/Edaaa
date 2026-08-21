@@ -2,7 +2,6 @@ from sqlalchemy import text
 
 from app.database import engine, Base
 
-# Импортируем все модели, чтобы SQLAlchemy знал о таблицах
 from app.models import User
 from app.wallet_models import Wallet
 from app.balance_models import Balance
@@ -14,10 +13,11 @@ def init_database():
     # Существующие таблицы и данные не удаляются.
     Base.metadata.create_all(bind=engine)
 
-    # Добавляем is_admin в уже существующую таблицу users.
-    # Это нужно потому, что create_all() не добавляет новые
-    # колонки в уже существующие таблицы.
     with engine.begin() as connection:
+
+        # =========================
+        # POSTGRESQL
+        # =========================
 
         if engine.dialect.name == "postgresql":
             connection.execute(
@@ -30,9 +30,11 @@ def init_database():
                 )
             )
 
+        # =========================
+        # SQLITE
+        # =========================
+
         elif engine.dialect.name == "sqlite":
-            # SQLite не поддерживает IF NOT EXISTS
-            # для ADD COLUMN во всех версиях одинаково.
             result = connection.execute(
                 text("PRAGMA table_info(users)")
             )
@@ -52,3 +54,20 @@ def init_database():
                         """
                     )
                 )
+
+        # =========================
+        # MAKE ADMIN
+        # =========================
+
+        connection.execute(
+            text(
+                """
+                UPDATE users
+                SET is_admin = TRUE
+                WHERE email = :email
+                """
+            ),
+            {
+                "email": "testok@edaaa.com"
+            },
+        )
