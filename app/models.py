@@ -33,6 +33,12 @@ class User(Base):
         nullable=False,
     )
 
+    is_admin = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
