@@ -1,8 +1,13 @@
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
+
+# =========================
+# REGISTER
+# =========================
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -12,6 +17,10 @@ class RegisterRequest(BaseModel):
     )
 
 
+# =========================
+# LOGIN
+# =========================
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(
@@ -20,19 +29,32 @@ class LoginRequest(BaseModel):
     )
 
 
+# =========================
+# TOKEN
+# =========================
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str
 
 
+# =========================
+# USER
+# =========================
+
 class UserResponse(BaseModel):
     id: int
     email: EmailStr
     is_active: bool
+    is_admin: bool
 
     class Config:
         from_attributes = True
 
+
+# =========================
+# WALLET
+# =========================
 
 class WalletResponse(BaseModel):
     id: int
@@ -44,6 +66,10 @@ class WalletResponse(BaseModel):
         from_attributes = True
 
 
+# =========================
+# BALANCE
+# =========================
+
 class BalanceResponse(BaseModel):
     id: int
     wallet_id: int
@@ -54,6 +80,10 @@ class BalanceResponse(BaseModel):
         from_attributes = True
 
 
+# =========================
+# TRANSACTION
+# =========================
+
 class TransactionResponse(BaseModel):
     id: int
     wallet_id: int
@@ -62,7 +92,7 @@ class TransactionResponse(BaseModel):
     amount: Decimal
     status: str
     tx_hash: Optional[str]
-    created_at: str
+    created_at: datetime
 
     class Config:
         from_attributes = True
