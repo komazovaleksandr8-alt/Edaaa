@@ -19,17 +19,19 @@ from app.schemas import (
     LoginRequest,
     RegisterRequest,
     TokenResponse,
+    TransactionResponse,
     UserResponse,
     WalletResponse,
 )
 from app.wallet_models import Wallet
 from app.balance_models import Balance
+from app.transaction_models import Transaction
 
 
 app = FastAPI(
     title="Edaaa Wallet",
     description="Edaaa Cryptocurrency Wallet API",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 
@@ -55,7 +57,7 @@ def root():
     return {
         "status": "ok",
         "message": "Edaaa Wallet API is running",
-        "version": "0.2.0",
+        "version": "0.3.0",
     }
 
 
@@ -278,3 +280,33 @@ def wallet_balance(
         )
 
     return balance
+
+
+@app.get(
+    "/wallet/transactions",
+    response_model=list[TransactionResponse],
+)
+def wallet_transactions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    wallet = (
+        db.query(Wallet)
+        .filter(Wallet.user_id == current_user.id)
+        .first()
+    )
+
+    if not wallet:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wallet not found.",
+        )
+
+    transactions = (
+        db.query(Transaction)
+        .filter(Transaction.wallet_id == wallet.id)
+        .order_by(Transaction.created_at.desc())
+        .all()
+    )
+
+    return transactions
