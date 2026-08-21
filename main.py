@@ -15,6 +15,7 @@ from app.database import get_db
 from app.init_db import init_database
 from app.models import User
 from app.schemas import (
+    BalanceResponse,
     LoginRequest,
     RegisterRequest,
     TokenResponse,
@@ -22,12 +23,13 @@ from app.schemas import (
     WalletResponse,
 )
 from app.wallet_models import Wallet
+from app.balance_models import Balance
 
 
 app = FastAPI(
     title="Edaaa Wallet",
     description="Edaaa Cryptocurrency Wallet API",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 
@@ -53,7 +55,7 @@ def root():
     return {
         "status": "ok",
         "message": "Edaaa Wallet API is running",
-        "version": "0.1.0",
+        "version": "0.2.0",
     }
 
 
@@ -101,6 +103,16 @@ def register(
     )
 
     db.add(wallet)
+    db.flush()
+
+    balance = Balance(
+        wallet_id=wallet.id,
+        asset="USDT",
+        amount=0,
+    )
+
+    db.add(balance)
+
     db.commit()
     db.refresh(user)
 
@@ -228,3 +240,41 @@ def wallet(
         )
 
     return wallet
+
+
+@app.get(
+    "/wallet/balance",
+    response_model=BalanceResponse,
+)
+def wallet_balance(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    wallet = (
+        db.query(Wallet)
+        .filter(Wallet.user_id == current_user.id)
+        .first()
+    )
+
+    if not wallet:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wallet not found.",
+        )
+
+    balance = (
+        db.query(Balance)
+        .filter(
+            Balance.wallet_id == wallet.id,
+            Balance.asset == "USDT",
+        )
+        .first()
+    )
+
+    if not balance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="USDT balance not found.",
+        )
+
+    return balance
