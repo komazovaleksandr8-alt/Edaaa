@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from web3 import Web3
 
 from app.auth import (
     create_access_token,
@@ -13,6 +14,7 @@ from app.auth import (
     hash_password,
     verify_password,
 )
+from app.config import settings
 from app.database import get_db
 from app.init_db import init_database
 from app.models import User
@@ -33,7 +35,7 @@ from app.transaction_models import Transaction
 app = FastAPI(
     title="Edaaa Wallet",
     description="Edaaa Cryptocurrency Wallet API",
-    version="0.4.0",
+    version="0.5.0",
 )
 
 
@@ -49,49 +51,24 @@ app.add_middleware(
 security = HTTPBearer()
 
 
-# =========================
-# ADMIN DEPOSIT SCHEMA
-# =========================
-
 class AdminDepositRequest(BaseModel):
-    user_id: int = Field(
-        ...,
-        gt=0,
-        description="ID пользователя, которому зачисляются USDT",
-    )
+    user_id: int = Field(gt=0)
+    amount: Decimal = Field(gt=0)
 
-    amount: Decimal = Field(
-        ...,
-        gt=0,
-        description="Количество USDT для зачисления",
-    )
-
-
-# =========================
-# STARTUP
-# =========================
 
 @app.on_event("startup")
 def startup():
     init_database()
 
 
-# =========================
-# ROOT
-# =========================
-
 @app.get("/")
 def root():
     return {
         "status": "ok",
         "message": "Edaaa Wallet API is running",
-        "version": "0.4.0",
+        "version": "0.5.0",
     }
 
-
-# =========================
-# HEALTH
-# =========================
 
 @app.get("/health")
 def health():
@@ -101,9 +78,48 @@ def health():
     }
 
 
-# =========================
-# REGISTER
-# =========================
+@app.get("/blockchain/status")
+def blockchain_status():
+    if not settings.ETH_RPC_URL:
+        raise HTTPException(
+            status_code=503,
+            detail="ETH_RPC_URL is not configured.",
+        )
+
+    web3 = Web3(
+        Web3.HTTPProvider(
+            settings.ETH_RPC_URL
+        )
+    )
+
+    try:
+        connected = web3.is_connected()
+
+        if not connected:
+            raise HTTPException(
+                status_code=503,
+                detail="Ethereum RPC connection failed.",
+            )
+
+        chain_id = web3.eth.chain_id
+        block_number = web3.eth.block_number
+
+        return {
+            "connected": True,
+            "network": settings.ETH_NETWORK,
+            "chain_id": chain_id,
+            "latest_block": block_number,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Blockchain connection error: {str(exc)}",
+        )
+
 
 @app.post(
     "/register",
@@ -158,10 +174,6 @@ def register(
     return user
 
 
-# =========================
-# LOGIN
-# =========================
-
 @app.post(
     "/login",
     response_model=TokenResponse,
@@ -208,10 +220,6 @@ def login(
         "token_type": "bearer",
     }
 
-
-# =========================
-# CURRENT USER
-# =========================
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -262,10 +270,6 @@ def get_current_user(
     return user
 
 
-# =========================
-# ADMIN CHECK
-# =========================
-
 def get_current_admin(
     current_user: User = Depends(get_current_user),
 ):
@@ -278,10 +282,6 @@ def get_current_admin(
     return current_user
 
 
-# =========================
-# ME
-# =========================
-
 @app.get(
     "/me",
     response_model=UserResponse,
@@ -291,10 +291,6 @@ def me(
 ):
     return current_user
 
-
-# =========================
-# WALLET
-# =========================
 
 @app.get(
     "/wallet",
@@ -318,10 +314,6 @@ def wallet(
 
     return wallet
 
-
-# =========================
-# WALLET BALANCE
-# =========================
 
 @app.get(
     "/wallet/balance",
@@ -361,10 +353,6 @@ def wallet_balance(
     return balance
 
 
-# =========================
-# WALLET TRANSACTIONS
-# =========================
-
 @app.get(
     "/wallet/transactions",
     response_model=list[TransactionResponse],
@@ -399,10 +387,6 @@ def wallet_transactions(
     return transactions
 
 
-# =========================
-# ADMIN DEPOSIT
-# =========================
-
 @app.post(
     "/admin/deposit",
     response_model=TransactionResponse,
@@ -412,10 +396,6 @@ def admin_deposit(
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    # =========================
-    # FIND USER
-    # =========================
-
     user = (
         db.query(User)
         .filter(User.id == data.user_id)
@@ -427,10 +407,6 @@ def admin_deposit(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found.",
         )
-
-    # =========================
-    # FIND WALLET
-    # =========================
 
     wallet = (
         db.query(Wallet)
@@ -445,10 +421,6 @@ def admin_deposit(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Wallet not found.",
         )
-
-    # =========================
-    # FIND USDT BALANCE
-    # =========================
 
     balance = (
         db.query(Balance)
@@ -465,29 +437,11 @@ def admin_deposit(
             detail="USDT balance not found.",
         )
 
-    # =========================
-    # VALIDATE AMOUNT
-    # =========================
-
     amount = Decimal(data.amount)
-
-    if amount <= Decimal("0"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Deposit amount must be greater than zero.",
-        )
-
-    # =========================
-    # UPDATE BALANCE
-    # =========================
 
     balance.amount = (
         Decimal(balance.amount) + amount
     )
-
-    # =========================
-    # CREATE TRANSACTION
-    # =========================
 
     transaction = Transaction(
         wallet_id=wallet.id,
@@ -499,10 +453,6 @@ def admin_deposit(
     )
 
     db.add(transaction)
-
-    # =========================
-    # SAVE
-    # =========================
 
     try:
         db.commit()
