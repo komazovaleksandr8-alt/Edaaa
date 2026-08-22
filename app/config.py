@@ -37,5 +37,10 @@ class Settings:
         "sepolia",
     )
 
+    WALLET_ENCRYPTION_KEY: str = os.getenv(
+        "WALLET_ENCRYPTION_KEY",
+        "",
+    )
+
 
 settings = Settings()
