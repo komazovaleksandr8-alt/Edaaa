@@ -1,4 +1,8 @@
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import (
+    Fernet,
+    InvalidToken,
+)
+
 from web3 import Web3
 from eth_account import Account
 
@@ -14,7 +18,9 @@ def get_wallet_fernet() -> Fernet:
         )
 
     try:
-        return Fernet(key.encode())
+        return Fernet(
+            key.encode()
+        )
 
     except Exception as exc:
         raise RuntimeError(
@@ -31,12 +37,16 @@ def create_real_ethereum_wallet():
 
     private_key = account.key.hex()
 
-    return address, private_key
+    return (
+        address,
+        private_key,
+    )
 
 
 def encrypt_private_key(
     private_key: str,
 ) -> str:
+
     fernet = get_wallet_fernet()
 
     encrypted = fernet.encrypt(
@@ -49,6 +59,7 @@ def encrypt_private_key(
 def decrypt_private_key(
     encrypted_private_key: str,
 ) -> str:
+
     fernet = get_wallet_fernet()
 
     try:
