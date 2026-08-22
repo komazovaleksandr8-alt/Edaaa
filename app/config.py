@@ -42,5 +42,17 @@ class Settings:
         "",
     )
 
+    # Администратор Edaaa.
+    ADMIN_EMAIL: str = os.getenv(
+        "ADMIN_EMAIL",
+        "",
+    )
+
+    # Секретный ключ для первичной активации администратора.
+    ADMIN_SETUP_KEY: str = os.getenv(
+        "ADMIN_SETUP_KEY",
+        "",
+    )
+
 
 settings = Settings()
