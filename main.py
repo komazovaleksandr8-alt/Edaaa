@@ -1,12 +1,13 @@
-import secrets
 from decimal import Decimal
 
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from web3 import Web3
+from eth_account import Account
 
 from app.auth import (
     create_access_token,
@@ -30,12 +31,13 @@ from app.schemas import (
 from app.wallet_models import Wallet
 from app.balance_models import Balance
 from app.transaction_models import Transaction
+from app.wallet_key_models import WalletKey
 
 
 app = FastAPI(
     title="Edaaa Wallet",
     description="Edaaa Cryptocurrency Wallet API",
-    version="0.5.0",
+    version="0.6.0",
 )
 
 
@@ -56,6 +58,65 @@ class AdminDepositRequest(BaseModel):
     amount: Decimal = Field(gt=0)
 
 
+def get_wallet_fernet() -> Fernet:
+    key = settings.WALLET_ENCRYPTION_KEY
+
+    if not key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="WALLET_ENCRYPTION_KEY is not configured.",
+        )
+
+    try:
+        return Fernet(key.encode())
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Invalid WALLET_ENCRYPTION_KEY.",
+        )
+
+
+def create_real_ethereum_wallet():
+    account = Account.create()
+
+    address = Web3.to_checksum_address(
+        account.address
+    )
+
+    private_key = account.key.hex()
+
+    return address, private_key
+
+
+def encrypt_private_key(private_key: str) -> str:
+    fernet = get_wallet_fernet()
+
+    encrypted = fernet.encrypt(
+        private_key.encode()
+    )
+
+    return encrypted.decode()
+
+
+def decrypt_private_key(
+    encrypted_private_key: str,
+) -> str:
+    fernet = get_wallet_fernet()
+
+    try:
+        decrypted = fernet.decrypt(
+            encrypted_private_key.encode()
+        )
+
+        return decrypted.decode()
+
+    except InvalidToken:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to decrypt wallet private key.",
+        )
+
+
 @app.on_event("startup")
 def startup():
     init_database()
@@ -66,7 +127,7 @@ def root():
     return {
         "status": "ok",
         "message": "Edaaa Wallet API is running",
-        "version": "0.5.0",
+        "version": "0.6.0",
     }
 
 
@@ -142,6 +203,8 @@ def register(
             detail="A user with this email already exists.",
         )
 
+    get_wallet_fernet()
+
     user = User(
         email=data.email,
         password_hash=hash_password(data.password),
@@ -151,14 +214,27 @@ def register(
     db.add(user)
     db.flush()
 
+    address, private_key = create_real_ethereum_wallet()
+
     wallet = Wallet(
         user_id=user.id,
-        address=f"edaaa_{secrets.token_hex(20)}",
-        network="ethereum",
+        address=address,
+        network=settings.ETH_NETWORK,
     )
 
     db.add(wallet)
     db.flush()
+
+    encrypted_private_key = encrypt_private_key(
+        private_key
+    )
+
+    wallet_key = WalletKey(
+        wallet_id=wallet.id,
+        encrypted_private_key=encrypted_private_key,
+    )
+
+    db.add(wallet_key)
 
     balance = Balance(
         wallet_id=wallet.id,
@@ -168,8 +244,17 @@ def register(
 
     db.add(balance)
 
-    db.commit()
-    db.refresh(user)
+    try:
+        db.commit()
+        db.refresh(user)
+
+    except Exception:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create user wallet.",
+        )
 
     return user
 
@@ -222,7 +307,9 @@ def login(
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials = Depends(
+        security
+    ),
     db: Session = Depends(get_db),
 ):
     try:
@@ -385,6 +472,115 @@ def wallet_transactions(
     )
 
     return transactions
+
+
+@app.get(
+    "/wallet/ethereum-balance"
+)
+def ethereum_balance(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not settings.ETH_RPC_URL:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ETH_RPC_URL is not configured.",
+        )
+
+    wallet = (
+        db.query(Wallet)
+        .filter(Wallet.user_id == current_user.id)
+        .first()
+    )
+
+    if not wallet:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wallet not found.",
+        )
+
+    if not Web3.is_address(wallet.address):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Wallet has an invalid Ethereum address.",
+        )
+
+    web3 = Web3(
+        Web3.HTTPProvider(
+            settings.ETH_RPC_URL
+        )
+    )
+
+    try:
+        if not web3.is_connected():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Ethereum RPC connection failed.",
+            )
+
+        checksum_address = Web3.to_checksum_address(
+            wallet.address
+        )
+
+        balance_wei = web3.eth.get_balance(
+            checksum_address
+        )
+
+        balance_eth = Web3.from_wei(
+            balance_wei,
+            "ether",
+        )
+
+        return {
+            "address": checksum_address,
+            "network": settings.ETH_NETWORK,
+            "asset": "ETH",
+            "balance": str(balance_eth),
+            "balance_wei": balance_wei,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to read Ethereum balance: {str(exc)}",
+        )
+
+
+@app.get(
+    "/wallet/key-status"
+)
+def wallet_key_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    wallet = (
+        db.query(Wallet)
+        .filter(Wallet.user_id == current_user.id)
+        .first()
+    )
+
+    if not wallet:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wallet not found.",
+        )
+
+    wallet_key = (
+        db.query(WalletKey)
+        .filter(
+            WalletKey.wallet_id == wallet.id
+        )
+        .first()
+    )
+
+    return {
+        "wallet_address": wallet.address,
+        "private_key_stored": wallet_key is not None,
+        "private_key_encrypted": wallet_key is not None,
+    }
 
 
 @app.post(
