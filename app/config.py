@@ -57,13 +57,8 @@ class Settings:
         "",
     )
 
-    TELEGRAM_WEBHOOK_URL: str = os.getenv(
-        "TELEGRAM_WEBHOOK_URL",
-        "",
-    )
-
-    TELEGRAM_WEBHOOK_SECRET: str = os.getenv(
-        "TELEGRAM_WEBHOOK_SECRET",
+    TELEGRAM_ADMIN_ID: str = os.getenv(
+        "TELEGRAM_ADMIN_ID",
         "",
     )
 
