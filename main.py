@@ -48,7 +48,7 @@ logger = logging.getLogger("edaaa")
 app = FastAPI(
     title="Edaaa Wallet",
     description="Edaaa Cryptocurrency Wallet API",
-    version="0.7.0",
+    version="0.7.1",
 )
 
 
@@ -155,14 +155,30 @@ async def blockchain_scanner_loop():
                 "Blockchain scanner loop error."
             )
 
-        await asyncio.sleep(15)
+        await asyncio.sleep(30)
 
 
 @app.on_event("startup")
 async def startup():
     global blockchain_scanner_task
 
-    init_database()
+    logger.info(
+        "Edaaa Wallet API startup started."
+    )
+
+    try:
+        await asyncio.to_thread(
+            init_database
+        )
+
+        logger.info(
+            "Database initialization completed."
+        )
+
+    except Exception:
+        logger.exception(
+            "Database initialization failed."
+        )
 
     blockchain_scanner_task = asyncio.create_task(
         blockchain_scanner_loop()
@@ -178,7 +194,7 @@ def root():
     return {
         "status": "ok",
         "message": "Edaaa Wallet API is running",
-        "version": "0.7.0",
+        "version": "0.7.1",
     }
 
 
@@ -263,9 +279,7 @@ def blockchain_scanner_status(
     }
 
 
-@app.post(
-    "/admin/blockchain/sync"
-)
+@app.post("/admin/blockchain/sync")
 def admin_blockchain_sync(
     admin: User = Depends(get_current_admin),
 ):
