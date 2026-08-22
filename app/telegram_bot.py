@@ -28,10 +28,6 @@ from app.main_wallet import (
 )
 
 
-logging.basicConfig(
-    level=logging.INFO,
-)
-
 logger = logging.getLogger(
     "edaaa.telegram"
 )
@@ -41,7 +37,7 @@ def create_wallet_for_user(
     db,
     user,
 ):
-    existing_wallet = (
+    wallet = (
         db.query(Wallet)
         .filter(
             Wallet.user_id == user.id
@@ -49,12 +45,13 @@ def create_wallet_for_user(
         .first()
     )
 
-    if existing_wallet:
-        return existing_wallet
+    if wallet:
+        return wallet
 
-    address, private_key = (
-        create_real_ethereum_wallet()
-    )
+    (
+        address,
+        private_key,
+    ) = create_real_ethereum_wallet()
 
     wallet = Wallet(
         user_id=user.id,
@@ -66,7 +63,9 @@ def create_wallet_for_user(
     db.flush()
 
     encrypted_private_key = (
-        encrypt_private_key(private_key)
+        encrypt_private_key(
+            private_key
+        )
     )
 
     wallet_key = WalletKey(
@@ -116,6 +115,7 @@ def get_or_create_telegram_user(
         )
 
         if user:
+
             user.telegram_username = (
                 telegram_user.username
             )
@@ -127,25 +127,31 @@ def get_or_create_telegram_user(
 
             db.commit()
 
-            return user, wallet
+            db.refresh(user)
+            db.refresh(wallet)
+
+            return (
+                user,
+                wallet,
+            )
 
         email = (
             f"telegram_{telegram_id}"
             "@telegram.edaaa.local"
         )
 
-        random_password = (
-            secrets.token_urlsafe(32)
+        password = secrets.token_urlsafe(
+            32
         )
 
         user = User(
             email=email,
-            password_hash=hash_password(
-                random_password
-            ),
             telegram_id=telegram_id,
             telegram_username=(
                 telegram_user.username
+            ),
+            password_hash=hash_password(
+                password
             ),
             is_active=True,
             is_admin=False,
@@ -165,11 +171,14 @@ def get_or_create_telegram_user(
         db.refresh(wallet)
 
         logger.info(
-            "Telegram user created: %s",
+            "Created Telegram user %s",
             telegram_id,
         )
 
-        return user, wallet
+        return (
+            user,
+            wallet,
+        )
 
     except Exception:
         db.rollback()
@@ -184,7 +193,9 @@ def get_or_create_telegram_user(
         db.close()
 
 
-def get_balances(wallet_id):
+def get_balances(
+    wallet_id: int,
+):
     db = SessionLocal()
 
     try:
@@ -212,7 +223,9 @@ def get_balances(wallet_id):
         db.close()
 
 
-def get_transactions(wallet_id):
+def get_transactions(
+    wallet_id: int,
+):
     db = SessionLocal()
 
     try:
@@ -234,6 +247,7 @@ def get_transactions(wallet_id):
 
 
 def main_keyboard():
+
     return InlineKeyboardMarkup(
         [
             [
@@ -277,14 +291,15 @@ def main_keyboard():
 
 
 def back_keyboard():
+
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
                     "⬅️ Назад",
                     callback_data="home",
-                ),
-            ],
+                )
+            ]
         ]
     )
 
@@ -293,11 +308,16 @@ async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     telegram_user = (
         update.effective_user
     )
 
+    if telegram_user is None:
+        return
+
     try:
+
         user, wallet = (
             get_or_create_telegram_user(
                 telegram_user
@@ -308,41 +328,54 @@ async def start(
             "👋 *Добро пожаловать "
             "в Edaaa Wallet!*\n\n"
             "Ваш криптокошелёк создан.\n\n"
-            f"👛 Адрес:\n"
+            "👛 Ваш Ethereum-адрес:\n"
             f"`{wallet.address}`\n\n"
             f"🌐 Сеть: "
             f"`{wallet.network}`\n\n"
             "Выберите действие:"
         )
 
-        await update.message.reply_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=main_keyboard(),
-        )
+        if update.message:
+
+            await update.message.reply_text(
+                text,
+                parse_mode="Markdown",
+                reply_markup=(
+                    main_keyboard()
+                ),
+            )
 
     except Exception:
+
         logger.exception(
-            "Telegram /start failed"
+            "Telegram /start error"
         )
 
-        await update.message.reply_text(
-            "❌ Не удалось открыть Edaaa Wallet.\n\n"
-            "Попробуйте ещё раз через несколько секунд."
-        )
+        if update.message:
+
+            await update.message.reply_text(
+                "❌ Не удалось открыть "
+                "Edaaa Wallet.\n\n"
+                "Попробуйте ещё раз."
+            )
 
 
 async def buttons(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     query = update.callback_query
+
+    if query is None:
+        return
 
     await query.answer()
 
     telegram_user = query.from_user
 
     try:
+
         user, wallet = (
             get_or_create_telegram_user(
                 telegram_user
@@ -353,54 +386,64 @@ async def buttons(
             "home",
             "refresh",
         ):
+
             await show_home(
                 query,
                 wallet,
             )
 
         elif query.data == "balance":
+
             await show_balance(
                 query,
                 wallet,
             )
 
         elif query.data == "wallet":
+
             await show_wallet(
                 query,
                 wallet,
             )
 
         elif query.data == "deposit":
+
             await show_deposit(
                 query,
                 wallet,
             )
 
         elif query.data == "withdraw":
+
             await show_withdraw(
-                query,
+                query
             )
 
         elif query.data == "history":
+
             await show_history(
                 query,
                 wallet,
             )
 
         elif query.data == "profile":
+
             await show_profile(
                 query,
                 user,
             )
 
     except Exception:
+
         logger.exception(
             "Telegram button error"
         )
 
         await query.edit_message_text(
             "❌ Произошла ошибка.",
-            reply_markup=back_keyboard(),
+            reply_markup=(
+                back_keyboard()
+            ),
         )
 
 
@@ -408,6 +451,7 @@ async def show_home(
     query,
     wallet,
 ):
+
     balances = get_balances(
         wallet.id
     )
@@ -441,6 +485,7 @@ async def show_balance(
     query,
     wallet,
 ):
+
     balances = get_balances(
         wallet.id
     )
@@ -465,7 +510,9 @@ async def show_balance(
     await query.edit_message_text(
         text,
         parse_mode="Markdown",
-        reply_markup=back_keyboard(),
+        reply_markup=(
+            back_keyboard()
+        ),
     )
 
 
@@ -473,17 +520,22 @@ async def show_wallet(
     query,
     wallet,
 ):
+
     text = (
         "👛 *Мой кошелёк*\n\n"
         "Ethereum-адрес:\n\n"
         f"`{wallet.address}`\n\n"
-        f"Сеть: `{wallet.network}`"
+        f"🌐 Сеть: `{wallet.network}`\n\n"
+        "Приватный ключ никогда "
+        "не показывается в Telegram."
     )
 
     await query.edit_message_text(
         text,
         parse_mode="Markdown",
-        reply_markup=back_keyboard(),
+        reply_markup=(
+            back_keyboard()
+        ),
     )
 
 
@@ -491,40 +543,48 @@ async def show_deposit(
     query,
     wallet,
 ):
+
     text = (
         "📥 *Пополнение*\n\n"
-        "Ваш Ethereum-адрес:\n\n"
+        "Отправьте ETH на адрес:\n\n"
         f"`{wallet.address}`\n\n"
-        f"Сеть: `{wallet.network}`\n\n"
-        "⚠️ Используйте только поддерживаемую "
-        "сеть и актив."
+        f"🌐 Сеть: `{wallet.network}`\n\n"
+        "После подтверждения транзакции "
+        "баланс будет обновлён."
     )
 
     await query.edit_message_text(
         text,
         parse_mode="Markdown",
-        reply_markup=back_keyboard(),
+        reply_markup=(
+            back_keyboard()
+        ),
     )
 
 
 async def show_withdraw(
     query,
 ):
+
     text = (
         "📤 *Вывод ETH*\n\n"
-        "Функция вывода будет подключена "
-        "на следующем этапе.\n\n"
-        "Перед отправкой добавим:\n"
-        "• ввод адреса\n"
-        "• ввод суммы\n"
-        "• проверку комиссии\n"
-        "• подтверждение операции"
+        "Система отправки ETH уже есть "
+        "в Edaaa API.\n\n"
+        "Следующим шагом подключим сюда "
+        "безопасную форму:\n\n"
+        "1. Адрес получателя\n"
+        "2. Сумма\n"
+        "3. Расчёт комиссии\n"
+        "4. Подтверждение\n"
+        "5. Отправка транзакции"
     )
 
     await query.edit_message_text(
         text,
         parse_mode="Markdown",
-        reply_markup=back_keyboard(),
+        reply_markup=(
+            back_keyboard()
+        ),
     )
 
 
@@ -532,22 +592,26 @@ async def show_history(
     query,
     wallet,
 ):
+
     transactions = get_transactions(
         wallet.id
     )
 
     if not transactions:
+
         text = (
             "📜 *История*\n\n"
-            "Транзакций пока нет."
+            "Операций пока нет."
         )
 
     else:
+
         lines = [
             "📜 *Последние операции*\n"
         ]
 
         for transaction in transactions:
+
             lines.append(
                 f"• {transaction.type} | "
                 f"{transaction.asset} | "
@@ -560,7 +624,9 @@ async def show_history(
     await query.edit_message_text(
         text,
         parse_mode="Markdown",
-        reply_markup=back_keyboard(),
+        reply_markup=(
+            back_keyboard()
+        ),
     )
 
 
@@ -568,35 +634,46 @@ async def show_profile(
     query,
     user,
 ):
+
     username = (
         f"@{user.telegram_username}"
         if user.telegram_username
         else "не указан"
     )
 
+    status_text = (
+        "Активен"
+        if user.is_active
+        else "Заблокирован"
+    )
+
     text = (
         "👤 *Профиль*\n\n"
         f"ID Edaaa: `{user.id}`\n"
         f"Telegram: `{username}`\n"
-        f"Статус: "
-        f"`{'Активен' if user.is_active else 'Заблокирован'}`"
+        f"Статус: `{status_text}`"
     )
 
     await query.edit_message_text(
         text,
         parse_mode="Markdown",
-        reply_markup=back_keyboard(),
+        reply_markup=(
+            back_keyboard()
+        ),
     )
 
 
 def create_application():
+
     token = (
         settings.TELEGRAM_BOT_TOKEN
     )
 
     if not token:
+
         raise RuntimeError(
-            "TELEGRAM_BOT_TOKEN is not configured."
+            "TELEGRAM_BOT_TOKEN "
+            "is not configured."
         )
 
     application = (
@@ -614,26 +691,8 @@ def create_application():
 
     application.add_handler(
         CallbackQueryHandler(
-            buttons,
+            buttons
         )
     )
 
     return application
-
-
-def main():
-    application = (
-        create_application()
-    )
-
-    logger.info(
-        "Starting Edaaa Telegram bot..."
-    )
-
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES
-    )
-
-
-if __name__ == "__main__":
-    main()
