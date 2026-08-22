@@ -1,12 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import (
-    Boolean,
-    Column,
-    DateTime,
-    Integer,
-    String,
-)
+from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -28,18 +22,6 @@ class User(Base):
         nullable=False,
     )
 
-    telegram_id = Column(
-        String(64),
-        unique=True,
-        index=True,
-        nullable=True,
-    )
-
-    telegram_username = Column(
-        String(255),
-        nullable=True,
-    )
-
     password_hash = Column(
         String(255),
         nullable=False,
@@ -57,11 +39,16 @@ class User(Base):
         nullable=False,
     )
 
+    telegram_id = Column(
+        String(64),
+        unique=True,
+        index=True,
+        nullable=True,
+    )
+
     created_at = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(
-            timezone.utc
-        ),
+        default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
 
@@ -70,6 +57,3 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
-
-
-from app.wallet_models import Wallet
