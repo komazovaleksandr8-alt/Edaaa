@@ -46,6 +46,11 @@ class User(Base):
         nullable=True,
     )
 
+    telegram_username = Column(
+        String(255),
+        nullable=True,
+    )
+
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
