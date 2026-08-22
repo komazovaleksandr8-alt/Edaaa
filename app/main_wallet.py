@@ -1,5 +1,4 @@
 from cryptography.fernet import Fernet, InvalidToken
-from fastapi import HTTPException, status
 from web3 import Web3
 from eth_account import Account
 
