@@ -34,7 +34,7 @@ class Transaction(Base):
     )
 
     amount = Column(
-        Numeric(30, 8),
+        Numeric(30, 18),
         nullable=False,
     )
 
@@ -48,6 +48,7 @@ class Transaction(Base):
         String(255),
         nullable=True,
         unique=True,
+        index=True,
     )
 
     created_at = Column(
