@@ -14,7 +14,7 @@ class Settings:
 
     APP_VERSION: str = os.getenv(
         "APP_VERSION",
-        "0.8.0",
+        "0.9.0",
     )
 
     DATABASE_URL: str = os.getenv(
@@ -54,6 +54,16 @@ class Settings:
 
     TELEGRAM_BOT_TOKEN: str = os.getenv(
         "TELEGRAM_BOT_TOKEN",
+        "",
+    )
+
+    TELEGRAM_WEBHOOK_URL: str = os.getenv(
+        "TELEGRAM_WEBHOOK_URL",
+        "",
+    )
+
+    TELEGRAM_WEBHOOK_SECRET: str = os.getenv(
+        "TELEGRAM_WEBHOOK_SECRET",
         "",
     )
 
