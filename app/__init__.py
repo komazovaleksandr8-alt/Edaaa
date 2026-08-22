@@ -19,7 +19,8 @@ def init_database():
             text(
                 """
                 ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS telegram_id VARCHAR(64)
+                ADD COLUMN IF NOT EXISTS
+                telegram_id VARCHAR(64)
                 """
             )
         )
@@ -28,7 +29,8 @@ def init_database():
             text(
                 """
                 ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(255)
+                ADD COLUMN IF NOT EXISTS
+                telegram_username VARCHAR(255)
                 """
             )
         )
