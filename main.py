@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from decimal import Decimal
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -32,12 +34,21 @@ from app.wallet_models import Wallet
 from app.balance_models import Balance
 from app.transaction_models import Transaction
 from app.wallet_key_models import WalletKey
+from app.blockchain_state_models import BlockchainState
+from app.blockchain_scanner import scan_once
+
+
+logging.basicConfig(
+    level=logging.INFO,
+)
+
+logger = logging.getLogger("edaaa")
 
 
 app = FastAPI(
     title="Edaaa Wallet",
     description="Edaaa Cryptocurrency Wallet API",
-    version="0.6.0",
+    version="0.7.0",
 )
 
 
@@ -58,6 +69,9 @@ class AdminDepositRequest(BaseModel):
     amount: Decimal = Field(gt=0)
 
 
+blockchain_scanner_task = None
+
+
 def get_wallet_fernet() -> Fernet:
     key = settings.WALLET_ENCRYPTION_KEY
 
@@ -69,6 +83,7 @@ def get_wallet_fernet() -> Fernet:
 
     try:
         return Fernet(key.encode())
+
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -88,7 +103,9 @@ def create_real_ethereum_wallet():
     return address, private_key
 
 
-def encrypt_private_key(private_key: str) -> str:
+def encrypt_private_key(
+    private_key: str,
+) -> str:
     fernet = get_wallet_fernet()
 
     encrypted = fernet.encrypt(
@@ -117,9 +134,43 @@ def decrypt_private_key(
         )
 
 
+async def blockchain_scanner_loop():
+    logger.info(
+        "Edaaa blockchain scanner started."
+    )
+
+    while True:
+        try:
+            result = await asyncio.to_thread(
+                scan_once
+            )
+
+            logger.info(
+                "Blockchain scan result: %s",
+                result,
+            )
+
+        except Exception:
+            logger.exception(
+                "Blockchain scanner loop error."
+            )
+
+        await asyncio.sleep(15)
+
+
 @app.on_event("startup")
-def startup():
+async def startup():
+    global blockchain_scanner_task
+
     init_database()
+
+    blockchain_scanner_task = asyncio.create_task(
+        blockchain_scanner_loop()
+    )
+
+    logger.info(
+        "Edaaa Wallet API started."
+    )
 
 
 @app.get("/")
@@ -127,7 +178,7 @@ def root():
     return {
         "status": "ok",
         "message": "Edaaa Wallet API is running",
-        "version": "0.6.0",
+        "version": "0.7.0",
     }
 
 
@@ -179,6 +230,52 @@ def blockchain_status():
         raise HTTPException(
             status_code=503,
             detail=f"Blockchain connection error: {str(exc)}",
+        )
+
+
+@app.get("/blockchain/scanner-status")
+def blockchain_scanner_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    state = (
+        db.query(BlockchainState)
+        .filter(
+            BlockchainState.network
+            == settings.ETH_NETWORK
+        )
+        .first()
+    )
+
+    if not state:
+        return {
+            "network": settings.ETH_NETWORK,
+            "initialized": False,
+            "last_scanned_block": None,
+            "updated_at": None,
+        }
+
+    return {
+        "network": state.network,
+        "initialized": True,
+        "last_scanned_block": state.last_scanned_block,
+        "updated_at": state.updated_at,
+    }
+
+
+@app.post(
+    "/admin/blockchain/sync"
+)
+def admin_blockchain_sync(
+    admin: User = Depends(get_current_admin),
+):
+    try:
+        return scan_once()
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Blockchain sync failed: {str(exc)}",
         )
 
 
@@ -236,13 +333,20 @@ def register(
 
     db.add(wallet_key)
 
-    balance = Balance(
+    usdt_balance = Balance(
         wallet_id=wallet.id,
         asset="USDT",
         amount=Decimal("0"),
     )
 
-    db.add(balance)
+    eth_balance = Balance(
+        wallet_id=wallet.id,
+        asset="ETH",
+        amount=Decimal("0"),
+    )
+
+    db.add(usdt_balance)
+    db.add(eth_balance)
 
     try:
         db.commit()
@@ -389,7 +493,9 @@ def wallet(
 ):
     wallet = (
         db.query(Wallet)
-        .filter(Wallet.user_id == current_user.id)
+        .filter(
+            Wallet.user_id == current_user.id
+        )
         .first()
     )
 
@@ -412,7 +518,9 @@ def wallet_balance(
 ):
     wallet = (
         db.query(Wallet)
-        .filter(Wallet.user_id == current_user.id)
+        .filter(
+            Wallet.user_id == current_user.id
+        )
         .first()
     )
 
@@ -450,7 +558,9 @@ def wallet_transactions(
 ):
     wallet = (
         db.query(Wallet)
-        .filter(Wallet.user_id == current_user.id)
+        .filter(
+            Wallet.user_id == current_user.id
+        )
         .first()
     )
 
@@ -489,7 +599,9 @@ def ethereum_balance(
 
     wallet = (
         db.query(Wallet)
-        .filter(Wallet.user_id == current_user.id)
+        .filter(
+            Wallet.user_id == current_user.id
+        )
         .first()
     )
 
@@ -558,7 +670,9 @@ def wallet_key_status(
 ):
     wallet = (
         db.query(Wallet)
-        .filter(Wallet.user_id == current_user.id)
+        .filter(
+            Wallet.user_id == current_user.id
+        )
         .first()
     )
 
