@@ -22,6 +22,18 @@ class User(Base):
         nullable=False,
     )
 
+    telegram_id = Column(
+        String(64),
+        unique=True,
+        index=True,
+        nullable=True,
+    )
+
+    telegram_username = Column(
+        String(255),
+        nullable=True,
+    )
+
     password_hash = Column(
         String(255),
         nullable=False,
