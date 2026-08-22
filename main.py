@@ -23,9 +23,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from web3 import Web3
-
 from eth_account import Account
-
 
 from app.auth import (
     create_access_token,
@@ -35,11 +33,8 @@ from app.auth import (
 )
 
 from app.config import settings
-
 from app.database import get_db
-
 from app.init_db import init_database
-
 from app.models import User
 
 from app.schemas import (
@@ -53,11 +48,8 @@ from app.schemas import (
 )
 
 from app.wallet_models import Wallet
-
 from app.balance_models import Balance
-
 from app.transaction_models import Transaction
-
 from app.wallet_key_models import WalletKey
 
 from app.blockchain_state_models import (
@@ -126,9 +118,8 @@ security = HTTPBearer()
 # ADMIN DEPOSIT
 # ============================================================
 
-class AdminDepositRequest(
-    BaseModel
-):
+class AdminDepositRequest(BaseModel):
+
     user_id: int = Field(
         gt=0
     )
@@ -155,9 +146,7 @@ telegram_bot_task = None
 
 def get_wallet_fernet() -> Fernet:
 
-    key = (
-        settings.WALLET_ENCRYPTION_KEY
-    )
+    key = settings.WALLET_ENCRYPTION_KEY
 
     if not key:
 
@@ -177,7 +166,7 @@ def get_wallet_fernet() -> Fernet:
             key.encode()
         )
 
-    except Exception:
+    except Exception as exc:
 
         raise HTTPException(
             status_code=(
@@ -186,22 +175,18 @@ def get_wallet_fernet() -> Fernet:
             detail=(
                 "Invalid WALLET_ENCRYPTION_KEY."
             ),
-        )
+        ) from exc
 
 
 def create_real_ethereum_wallet():
 
     account = Account.create()
 
-    address = (
-        Web3.to_checksum_address(
-            account.address
-        )
+    address = Web3.to_checksum_address(
+        account.address
     )
 
-    private_key = (
-        account.key.hex()
-    )
+    private_key = account.key.hex()
 
     return (
         address,
@@ -213,14 +198,10 @@ def encrypt_private_key(
     private_key: str,
 ) -> str:
 
-    fernet = (
-        get_wallet_fernet()
-    )
+    fernet = get_wallet_fernet()
 
-    encrypted = (
-        fernet.encrypt(
-            private_key.encode()
-        )
+    encrypted = fernet.encrypt(
+        private_key.encode()
     )
 
     return encrypted.decode()
@@ -230,21 +211,17 @@ def decrypt_private_key(
     encrypted_private_key: str,
 ) -> str:
 
-    fernet = (
-        get_wallet_fernet()
-    )
+    fernet = get_wallet_fernet()
 
     try:
 
-        decrypted = (
-            fernet.decrypt(
-                encrypted_private_key.encode()
-            )
+        decrypted = fernet.decrypt(
+            encrypted_private_key.encode()
         )
 
         return decrypted.decode()
 
-    except InvalidToken:
+    except InvalidToken as exc:
 
         raise HTTPException(
             status_code=(
@@ -254,7 +231,7 @@ def decrypt_private_key(
                 "Failed to decrypt "
                 "wallet private key."
             ),
-        )
+        ) from exc
 
 
 # ============================================================
@@ -272,14 +249,12 @@ def get_current_user(
 
     try:
 
-        payload = (
-            decode_access_token(
-                credentials.credentials
-            )
+        payload = decode_access_token(
+            credentials.credentials
         )
 
-        user_id = (
-            payload.get("sub")
+        user_id = payload.get(
+            "sub"
         )
 
         if not user_id:
@@ -388,6 +363,14 @@ async def blockchain_scanner_loop():
                 result,
             )
 
+        except asyncio.CancelledError:
+
+            logger.info(
+                "Blockchain scanner task cancelled."
+            )
+
+            raise
+
         except Exception:
 
             logger.exception(
@@ -411,21 +394,27 @@ async def telegram_bot_loop():
         "Starting Edaaa Telegram bot..."
     )
 
-    telegram_application = (
-        create_telegram_application()
-    )
-
-    await telegram_application.initialize()
-
-    await telegram_application.start()
-
-    await telegram_application.updater.start_polling()
-
-    logger.info(
-        "Edaaa Telegram bot started."
-    )
-
     try:
+
+        telegram_application = (
+            create_telegram_application()
+        )
+
+        await telegram_application.initialize()
+
+        await telegram_application.start()
+
+        if telegram_application.updater is None:
+
+            raise RuntimeError(
+                "Telegram updater is not available."
+            )
+
+        await telegram_application.updater.start_polling()
+
+        logger.info(
+            "Edaaa Telegram bot started successfully."
+        )
 
         while True:
 
@@ -433,17 +422,57 @@ async def telegram_bot_loop():
                 3600
             )
 
-    finally:
+    except asyncio.CancelledError:
 
         logger.info(
-            "Stopping Edaaa Telegram bot..."
+            "Telegram bot task cancelled."
         )
 
-        await telegram_application.updater.stop()
+        raise
 
-        await telegram_application.stop()
+    except Exception:
 
-        await telegram_application.shutdown()
+        logger.exception(
+            "Telegram bot crashed."
+        )
+
+    finally:
+
+        if telegram_application:
+
+            try:
+
+                if telegram_application.updater:
+
+                    await telegram_application.updater.stop()
+
+            except Exception:
+
+                logger.exception(
+                    "Failed to stop Telegram updater."
+                )
+
+            try:
+
+                await telegram_application.stop()
+
+            except Exception:
+
+                logger.exception(
+                    "Failed to stop Telegram application."
+                )
+
+            try:
+
+                await telegram_application.shutdown()
+
+            except Exception:
+
+                logger.exception(
+                    "Failed to shutdown Telegram application."
+                )
+
+            telegram_application = None
 
 
 # ============================================================
@@ -459,7 +488,15 @@ async def startup():
     global telegram_bot_task
 
     logger.info(
+        "=================================================="
+    )
+
+    logger.info(
         "Edaaa Wallet API startup started."
+    )
+
+    logger.info(
+        "=================================================="
     )
 
     # --------------------------------------------------------
@@ -467,6 +504,10 @@ async def startup():
     # --------------------------------------------------------
 
     try:
+
+        logger.info(
+            "Initializing database..."
+        )
 
         await asyncio.to_thread(
             init_database
@@ -482,45 +523,133 @@ async def startup():
             "Database initialization failed."
         )
 
+        logger.warning(
+            "Continuing API startup despite database error."
+        )
+
     # --------------------------------------------------------
     # BLOCKCHAIN SCANNER
     # --------------------------------------------------------
 
-    blockchain_scanner_task = (
-        asyncio.create_task(
-            blockchain_scanner_loop()
-        )
-    )
+    try:
 
-    logger.info(
-        "Blockchain scanner task created."
-    )
-
-    # --------------------------------------------------------
-    # TELEGRAM
-    # --------------------------------------------------------
-
-    if settings.TELEGRAM_BOT_TOKEN:
-
-        telegram_bot_task = (
+        blockchain_scanner_task = (
             asyncio.create_task(
-                telegram_bot_loop()
+                blockchain_scanner_loop()
             )
         )
 
         logger.info(
-            "Telegram bot task created."
+            "Blockchain scanner task created."
         )
+
+    except Exception:
+
+        logger.exception(
+            "Failed to create blockchain scanner task."
+        )
+
+    # --------------------------------------------------------
+    # TELEGRAM BOT
+    # --------------------------------------------------------
+
+    if settings.TELEGRAM_BOT_TOKEN:
+
+        try:
+
+            telegram_bot_task = (
+                asyncio.create_task(
+                    telegram_bot_loop()
+                )
+            )
+
+            logger.info(
+                "Telegram bot task created."
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Failed to create Telegram bot task."
+            )
 
     else:
 
         logger.warning(
-            "TELEGRAM_BOT_TOKEN is not configured. "
-            "Telegram bot will not start."
+            "TELEGRAM_BOT_TOKEN is not configured."
         )
 
+    # --------------------------------------------------------
+    # API READY
+    # --------------------------------------------------------
+
     logger.info(
-        "Edaaa Wallet API started."
+        "=================================================="
+    )
+
+    logger.info(
+        "Edaaa Wallet API is READY."
+    )
+
+    logger.info(
+        "=================================================="
+    )
+
+
+# ============================================================
+# SHUTDOWN
+# ============================================================
+
+@app.on_event(
+    "shutdown"
+)
+async def shutdown():
+
+    global blockchain_scanner_task
+    global telegram_bot_task
+
+    logger.info(
+        "Edaaa Wallet API shutdown started."
+    )
+
+    # --------------------------------------------------------
+    # STOP BLOCKCHAIN SCANNER
+    # --------------------------------------------------------
+
+    if blockchain_scanner_task:
+
+        blockchain_scanner_task.cancel()
+
+        try:
+
+            await blockchain_scanner_task
+
+        except asyncio.CancelledError:
+
+            pass
+
+        blockchain_scanner_task = None
+
+    # --------------------------------------------------------
+    # STOP TELEGRAM BOT
+    # --------------------------------------------------------
+
+    if telegram_bot_task:
+
+        telegram_bot_task.cancel()
+
+        try:
+
+            await telegram_bot_task
+
+        except asyncio.CancelledError:
+
+            pass
+
+        telegram_bot_task = None
+
+    logger.info(
+        "Edaaa Wallet API shutdown completed."
     )
 
 
@@ -587,9 +716,7 @@ def blockchain_status():
 
     try:
 
-        connected = (
-            web3.is_connected()
-        )
+        connected = web3.is_connected()
 
         if not connected:
 
@@ -600,19 +727,13 @@ def blockchain_status():
                 ),
             )
 
-        chain_id = (
-            web3.eth.chain_id
-        )
+        chain_id = web3.eth.chain_id
 
-        block_number = (
-            web3.eth.block_number
-        )
+        block_number = web3.eth.block_number
 
         return {
             "connected": True,
-            "network": (
-                settings.ETH_NETWORK
-            ),
+            "network": settings.ETH_NETWORK,
             "chain_id": chain_id,
             "latest_block": block_number,
         }
@@ -662,9 +783,7 @@ def blockchain_scanner_status(
     if not state:
 
         return {
-            "network": (
-                settings.ETH_NETWORK
-            ),
+            "network": settings.ETH_NETWORK,
             "initialized": False,
             "last_scanned_block": None,
             "updated_at": None,
@@ -1176,9 +1295,7 @@ def ethereum_balance(
 
         return {
             "address": checksum_address,
-            "network": (
-                settings.ETH_NETWORK
-            ),
+            "network": settings.ETH_NETWORK,
             "asset": "ETH",
             "balance": str(
                 balance_eth
@@ -1250,9 +1367,7 @@ def wallet_key_status(
     )
 
     return {
-        "wallet_address": (
-            wallet.address
-        ),
+        "wallet_address": wallet.address,
         "private_key_stored": (
             wallet_key is not None
         ),
@@ -1375,15 +1490,13 @@ def send_eth(
 
         private_key = None
 
-    send_transaction = (
-        SendTransaction(
-            wallet_id=wallet.id,
-            asset="ETH",
-            to_address=to_address,
-            amount=data.amount,
-            tx_hash=tx_hash,
-            status="pending",
-        )
+    send_transaction = SendTransaction(
+        wallet_id=wallet.id,
+        asset="ETH",
+        to_address=to_address,
+        amount=data.amount,
+        tx_hash=tx_hash,
+        status="pending",
     )
 
     db.add(
@@ -1413,25 +1526,15 @@ def send_eth(
         )
 
     return {
-        "id": (
-            send_transaction.id
-        ),
+        "id": send_transaction.id,
         "asset": "ETH",
-        "from_address": (
-            wallet.address
-        ),
-        "to_address": (
-            to_address
-        ),
+        "from_address": wallet.address,
+        "to_address": to_address,
         "amount": str(
             send_transaction.amount
         ),
-        "tx_hash": (
-            send_transaction.tx_hash
-        ),
-        "status": (
-            send_transaction.status
-        ),
+        "tx_hash": send_transaction.tx_hash,
+        "status": send_transaction.status,
     }
 
 
@@ -1456,8 +1559,7 @@ def admin_deposit(
     user = (
         db.query(User)
         .filter(
-            User.id
-            == data.user_id
+            User.id == data.user_id
         )
         .first()
     )
@@ -1476,8 +1578,7 @@ def admin_deposit(
     wallet = (
         db.query(Wallet)
         .filter(
-            Wallet.user_id
-            == user.id
+            Wallet.user_id == user.id
         )
         .first()
     )
@@ -1496,8 +1597,7 @@ def admin_deposit(
     balance = (
         db.query(Balance)
         .filter(
-            Balance.wallet_id
-            == wallet.id,
+            Balance.wallet_id == wallet.id,
             Balance.asset == "USDT",
         )
         .first()
