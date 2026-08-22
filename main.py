@@ -37,6 +37,19 @@ from app.wallet_key_models import WalletKey
 from app.blockchain_state_models import BlockchainState
 from app.blockchain_scanner import scan_once
 
+from app.send_models import SendTransaction
+from app.send_schemas import (
+    SendETHRequest,
+    SendETHResponse,
+)
+from app.send_service import (
+    get_wallet_private_key,
+    validate_recipient_address,
+    get_web3,
+    create_eth_transaction,
+    sign_and_send_eth_transaction,
+)
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +61,7 @@ logger = logging.getLogger("edaaa")
 app = FastAPI(
     title="Edaaa Wallet",
     description="Edaaa Cryptocurrency Wallet API",
-    version="0.7.2",
+    version="0.8.0",
 )
 
 
@@ -257,7 +270,7 @@ def root():
     return {
         "status": "ok",
         "message": "Edaaa Wallet API is running",
-        "version": "0.7.2",
+        "version": "0.8.0",
     }
 
 
@@ -708,6 +721,107 @@ def wallet_key_status(
         "wallet_address": wallet.address,
         "private_key_stored": wallet_key is not None,
         "private_key_encrypted": wallet_key is not None,
+    }
+
+
+@app.post(
+    "/wallet/send-eth",
+    response_model=SendETHResponse,
+)
+def send_eth(
+    data: SendETHRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    wallet = (
+        db.query(Wallet)
+        .filter(
+            Wallet.user_id == current_user.id
+        )
+        .first()
+    )
+
+    if not wallet:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wallet not found.",
+        )
+
+    if wallet.network != settings.ETH_NETWORK:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Wallet network does not match configured Ethereum network.",
+        )
+
+    to_address = validate_recipient_address(
+        data.to_address
+    )
+
+    if Web3.to_checksum_address(
+        wallet.address
+    ) == to_address:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot send ETH to the same wallet.",
+        )
+
+    web3 = get_web3()
+
+    private_key = get_wallet_private_key(
+        wallet=wallet,
+        db=db,
+        decrypt_private_key=decrypt_private_key,
+    )
+
+    try:
+        transaction = create_eth_transaction(
+            web3=web3,
+            wallet=wallet,
+            private_key=private_key,
+            to_address=to_address,
+            amount=data.amount,
+        )
+
+        tx_hash = sign_and_send_eth_transaction(
+            web3=web3,
+            private_key=private_key,
+            transaction=transaction,
+        )
+
+    finally:
+        private_key = None
+
+    send_transaction = SendTransaction(
+        wallet_id=wallet.id,
+        asset="ETH",
+        to_address=to_address,
+        amount=data.amount,
+        tx_hash=tx_hash,
+        status="pending",
+    )
+
+    db.add(send_transaction)
+
+    try:
+        db.commit()
+        db.refresh(send_transaction)
+
+    except Exception:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Transaction was broadcast but could not be saved.",
+        )
+
+    return {
+        "id": send_transaction.id,
+        "asset": "ETH",
+        "from_address": wallet.address,
+        "to_address": to_address,
+        "amount": str(send_transaction.amount),
+        "tx_hash": send_transaction.tx_hash,
+        "status": send_transaction.status,
     }
 
 
