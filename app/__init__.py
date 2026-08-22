@@ -1,6 +1,8 @@
 from sqlalchemy import text
+from web3 import Web3
 
 from app.database import engine, Base
+from app.config import settings
 
 from app.models import User
 from app.wallet_models import Wallet
@@ -57,3 +59,28 @@ def init_database():
                 "email": "testok@edaaa.com"
             },
         )
+
+    # =========================
+    # BLOCKCHAIN CONNECTION
+    # =========================
+
+    rpc_url = getattr(settings, "ETH_RPC_URL", None)
+
+    if not rpc_url:
+        print("ETH_RPC_URL is not configured.")
+        return
+
+    web3 = Web3(
+        Web3.HTTPProvider(rpc_url)
+    )
+
+    if not web3.is_connected():
+        print("WARNING: Ethereum RPC connection failed.")
+        return
+
+    chain_id = web3.eth.chain_id
+
+    print(
+        f"Ethereum RPC connected successfully. "
+        f"Chain ID: {chain_id}"
+    )
