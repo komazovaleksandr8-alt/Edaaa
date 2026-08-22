@@ -27,10 +27,11 @@ class Balance(Base):
         String(20),
         nullable=False,
         default="USDT",
+        index=True,
     )
 
     amount = Column(
-        Numeric(30, 8),
+        Numeric(30, 18),
         nullable=False,
         default=Decimal("0"),
     )
