@@ -15,13 +15,17 @@ from app.wallet_models import Wallet
 logger = logging.getLogger("edaaa.blockchain")
 
 
-# Количество подтверждений, после которого депозит
-# считается подтвержденным.
+# После какого количества подтверждений
+# депозит считается подтвержденным.
 CONFIRMATIONS_REQUIRED = 3
 
-# При первом запуске проверяем последние N блоков.
-# Этого достаточно, чтобы найти наш недавний депозит.
+# При первой инициализации scanner смотрит
+# последние 100 блоков.
 INITIAL_LOOKBACK_BLOCKS = 100
+
+# Максимальное количество блоков за один цикл.
+# Это защищает Render от слишком долгого сканирования.
+MAX_BLOCKS_PER_SCAN = 20
 
 
 def get_web3() -> Web3:
@@ -36,7 +40,10 @@ def get_web3() -> Web3:
 
     web3 = Web3(
         Web3.HTTPProvider(
-            settings.ETH_RPC_URL
+            settings.ETH_RPC_URL,
+            request_kwargs={
+                "timeout": 30,
+            },
         )
     )
 
@@ -53,8 +60,10 @@ def get_or_create_state(
     latest_block: int,
 ) -> BlockchainState:
     """
-    Получает состояние scanner для текущей сети.
-    Если состояние отсутствует, создаёт его.
+    Получает состояние scanner.
+
+    При первом запуске начинает сканирование
+    с последних INITIAL_LOOKBACK_BLOCKS блоков.
     """
 
     state = (
@@ -84,10 +93,13 @@ def get_or_create_state(
     db.refresh(state)
 
     logger.info(
-        "Blockchain scanner initialized. "
-        "Network=%s start_block=%s",
+        "Blockchain scanner initialized | "
+        "network=%s | "
+        "start_block=%s | "
+        "latest_block=%s",
         settings.ETH_NETWORK,
         start_block,
+        latest_block,
     )
 
     return state
@@ -95,8 +107,13 @@ def get_or_create_state(
 
 def get_wallet_map(db: Session) -> dict:
     """
-    Загружает все кошельки Edaaa для текущей сети
-    и создаёт быстрый lookup по Ethereum-адресу.
+    Загружает все кошельки Edaaa текущей сети.
+
+    Ключ dictionary:
+        lowercase Ethereum address
+
+    Значение:
+        Wallet
     """
 
     wallets = (
@@ -111,8 +128,10 @@ def get_wallet_map(db: Session) -> dict:
 
     for wallet in wallets:
         try:
-            checksum_address = Web3.to_checksum_address(
-                wallet.address
+            checksum_address = (
+                Web3.to_checksum_address(
+                    wallet.address
+                )
             )
 
             wallet_map[
@@ -133,8 +152,8 @@ def get_or_create_eth_balance(
     wallet: Wallet,
 ) -> Balance:
     """
-    Получает ETH balance пользователя.
-    Если ETH balance ещё нет — создаёт.
+    Получает ETH balance кошелька.
+    Если его ещё нет — создаёт.
     """
 
     balance = (
@@ -166,8 +185,8 @@ def transaction_already_processed(
     tx_hash: str,
 ) -> bool:
     """
-    Проверяет, была ли blockchain-транзакция
-    уже зачислена в Edaaa.
+    Проверяет, существует ли уже транзакция
+    с таким blockchain tx_hash.
     """
 
     transaction = (
@@ -190,10 +209,17 @@ def process_transaction(
     """
     Проверяет одну Ethereum-транзакцию.
 
-    Возвращает True, если депозит был зачислен.
+    Если транзакция является входящим ETH-депозитом
+    на кошелёк Edaaa и имеет необходимое количество
+    подтверждений — зачисляет ETH.
+
+    Возвращает:
+        True  — депозит зачислен
+        False — транзакция не является новым депозитом
     """
 
-    # Нас интересуют только транзакции с получателем.
+    # Контрактные/служебные транзакции без recipient
+    # нас здесь не интересуют.
     if not tx.get("to"):
         return False
 
@@ -201,6 +227,7 @@ def process_transaction(
         recipient = Web3.to_checksum_address(
             tx["to"]
         )
+
     except Exception:
         return False
 
@@ -208,13 +235,15 @@ def process_transaction(
         recipient.lower()
     )
 
-    # Адрес получателя не принадлежит Edaaa.
+    # Получатель не является кошельком Edaaa.
     if not wallet:
         return False
 
-    value_wei = int(tx["value"])
+    value_wei = int(
+        tx["value"]
+    )
 
-    # Нулевая транзакция не является депозитом ETH.
+    # Нулевая ETH-транзакция.
     if value_wei <= 0:
         return False
 
@@ -229,13 +258,16 @@ def process_transaction(
 
     block_number = tx["blockNumber"]
 
+    if block_number is None:
+        return False
+
     confirmations = (
         latest_block
         - block_number
         + 1
     )
 
-    # Пока недостаточно подтверждений.
+    # Ещё недостаточно подтверждений.
     if confirmations < CONFIRMATIONS_REQUIRED:
         return False
 
@@ -256,10 +288,15 @@ def process_transaction(
         wallet,
     )
 
-    balance.amount = (
-        Decimal(balance.amount)
-        + amount_eth
+    old_balance = Decimal(
+        balance.amount
     )
+
+    new_balance = (
+        old_balance + amount_eth
+    )
+
+    balance.amount = new_balance
 
     transaction = Transaction(
         wallet_id=wallet.id,
@@ -276,10 +313,14 @@ def process_transaction(
         "ETH DEPOSIT DETECTED | "
         "wallet=%s | "
         "amount=%s ETH | "
+        "old_balance=%s ETH | "
+        "new_balance=%s ETH | "
         "tx=%s | "
         "confirmations=%s",
         wallet.address,
         amount_eth,
+        old_balance,
+        new_balance,
         tx_hash,
         confirmations,
     )
@@ -297,6 +338,11 @@ def scan_block(
     """
     Сканирует один блок.
     """
+
+    logger.info(
+        "Scanning block %s",
+        block_number,
+    )
 
     block = web3.eth.get_block(
         block_number,
@@ -327,7 +373,10 @@ def scan_block(
 
 def scan_once() -> dict:
     """
-    Выполняет один полный цикл сканирования.
+    Выполняет один цикл blockchain scanning.
+
+    За один запуск обрабатывается не более
+    MAX_BLOCKS_PER_SCAN блоков.
     """
 
     web3 = get_web3()
@@ -359,12 +408,16 @@ def scan_once() -> dict:
 
         wallet_map = get_wallet_map(db)
 
+        if not wallet_map:
+            logger.info(
+                "No Edaaa wallets found for network %s.",
+                settings.ETH_NETWORK,
+            )
+
         start_block = (
             state.last_scanned_block + 1
         )
 
-        # Scanner уже дошёл до последнего
-        # подтверждённого блока.
         if start_block > confirmed_block:
             return {
                 "status": "up_to_date",
@@ -377,32 +430,65 @@ def scan_once() -> dict:
                 "processed_transactions": 0,
             }
 
+        end_block = min(
+            start_block
+            + MAX_BLOCKS_PER_SCAN
+            - 1,
+            confirmed_block,
+        )
+
         processed_transactions = 0
+
+        logger.info(
+            "Scanner range | "
+            "start=%s | "
+            "end=%s | "
+            "confirmed=%s",
+            start_block,
+            end_block,
+            confirmed_block,
+        )
 
         for block_number in range(
             start_block,
-            confirmed_block + 1,
+            end_block + 1,
         ):
-            processed_transactions += scan_block(
-                db=db,
-                web3=web3,
-                block_number=block_number,
-                wallet_map=wallet_map,
-                latest_block=latest_block,
-            )
+            try:
+                processed_transactions += (
+                    scan_block(
+                        db=db,
+                        web3=web3,
+                        block_number=block_number,
+                        wallet_map=wallet_map,
+                        latest_block=latest_block,
+                    )
+                )
 
-            # Сохраняем прогресс после каждого блока.
-            state.last_scanned_block = (
-                block_number
-            )
+                state.last_scanned_block = (
+                    block_number
+                )
 
-            db.commit()
+                db.commit()
+
+            except Exception:
+                db.rollback()
+
+                logger.exception(
+                    "Failed to scan block %s.",
+                    block_number,
+                )
+
+                # Не двигаем state дальше
+                # при ошибке конкретного блока.
+                break
 
         return {
             "status": "completed",
             "network": settings.ETH_NETWORK,
             "latest_block": latest_block,
             "confirmed_block": confirmed_block,
+            "start_block": start_block,
+            "end_block": end_block,
             "last_scanned_block": (
                 state.last_scanned_block
             ),
