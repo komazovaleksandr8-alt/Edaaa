@@ -12,6 +12,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
+
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -31,7 +32,9 @@ from app.transaction_models import Transaction
 from app.wallet_key_models import WalletKey
 
 
-logger = logging.getLogger("edaaa.telegram")
+logger = logging.getLogger(
+    "edaaa.telegram"
+)
 
 
 # ============================================================
@@ -49,23 +52,30 @@ def get_db() -> Session:
 
 
 def get_wallet_fernet() -> Fernet:
+
     key = settings.WALLET_ENCRYPTION_KEY
 
     if not key:
+
         raise RuntimeError(
             "WALLET_ENCRYPTION_KEY is not configured."
         )
 
     try:
-        return Fernet(key.encode())
+
+        return Fernet(
+            key.encode()
+        )
 
     except Exception as exc:
+
         raise RuntimeError(
             "Invalid WALLET_ENCRYPTION_KEY."
         ) from exc
 
 
 def create_real_ethereum_wallet():
+
     account = Account.create()
 
     address = Web3.to_checksum_address(
@@ -74,12 +84,16 @@ def create_real_ethereum_wallet():
 
     private_key = account.key.hex()
 
-    return address, private_key
+    return (
+        address,
+        private_key,
+    )
 
 
 def encrypt_private_key(
     private_key: str,
 ) -> str:
+
     fernet = get_wallet_fernet()
 
     encrypted = fernet.encrypt(
@@ -98,15 +112,17 @@ def get_or_create_user(
     telegram_id: int,
     telegram_username: str | None,
 ):
+
     db = get_db()
 
     try:
+
         telegram_id_string = str(
             telegram_id
         )
 
         # ----------------------------------------------------
-        # 1. Ищем пользователя по Telegram ID
+        # 1. Ищем пользователя
         # ----------------------------------------------------
 
         user = (
@@ -130,7 +146,7 @@ def get_or_create_user(
             return user
 
         # ----------------------------------------------------
-        # 2. Новый Telegram пользователь
+        # 2. Создаём нового пользователя
         # ----------------------------------------------------
 
         email = (
@@ -138,10 +154,8 @@ def get_or_create_user(
             "@edaaa.local"
         )
 
-        # Генерируем случайный технический пароль.
-        # Пользователь Telegram его не видит.
-        random_password = secrets.token_urlsafe(
-            32
+        random_password = (
+            secrets.token_urlsafe(32)
         )
 
         user = User(
@@ -158,6 +172,7 @@ def get_or_create_user(
         )
 
         db.add(user)
+
         db.flush()
 
         # ----------------------------------------------------
@@ -175,6 +190,7 @@ def get_or_create_user(
         )
 
         db.add(wallet)
+
         db.flush()
 
         # ----------------------------------------------------
@@ -197,7 +213,7 @@ def get_or_create_user(
         db.add(wallet_key)
 
         # ----------------------------------------------------
-        # 5. Создаём ETH balance
+        # 5. ETH balance
         # ----------------------------------------------------
 
         eth_balance = Balance(
@@ -209,7 +225,7 @@ def get_or_create_user(
         db.add(eth_balance)
 
         # ----------------------------------------------------
-        # 6. Создаём USDT balance
+        # 6. USDT balance
         # ----------------------------------------------------
 
         usdt_balance = Balance(
@@ -221,7 +237,7 @@ def get_or_create_user(
         db.add(usdt_balance)
 
         # ----------------------------------------------------
-        # 7. Сохраняем всё одной транзакцией
+        # 7. Сохраняем
         # ----------------------------------------------------
 
         db.commit()
@@ -237,22 +253,28 @@ def get_or_create_user(
         return user
 
     except Exception:
+
         db.rollback()
+
         logger.exception(
             "Failed to create Telegram user."
         )
+
         raise
 
     finally:
+
         db.close()
 
 
 def get_user_wallet(
     user_id: int,
 ):
+
     db = get_db()
 
     try:
+
         return (
             db.query(Wallet)
             .filter(
@@ -262,6 +284,7 @@ def get_user_wallet(
         )
 
     finally:
+
         db.close()
 
 
@@ -273,9 +296,11 @@ def get_user_wallet(
 def get_balances(
     wallet_id: int,
 ):
+
     db = get_db()
 
     try:
+
         balances = (
             db.query(Balance)
             .filter(
@@ -293,19 +318,81 @@ def get_balances(
         for balance in balances:
 
             if balance.asset == "ETH":
+
                 result["ETH"] = Decimal(
-                    balance.amount
+                    str(balance.amount)
                 )
 
             elif balance.asset == "USDT":
+
                 result["USDT"] = Decimal(
-                    balance.amount
+                    str(balance.amount)
                 )
 
         return result
 
     finally:
+
         db.close()
+
+
+# ============================================================
+# REAL ETH BALANCE
+# ============================================================
+
+
+def get_real_eth_balance(
+    wallet_address: str,
+):
+
+    if not settings.ETH_RPC_URL:
+
+        raise RuntimeError(
+            "ETH_RPC_URL is not configured."
+        )
+
+    if not Web3.is_address(
+        wallet_address
+    ):
+
+        raise RuntimeError(
+            "Invalid Ethereum wallet address."
+        )
+
+    web3 = Web3(
+        Web3.HTTPProvider(
+            settings.ETH_RPC_URL
+        )
+    )
+
+    if not web3.is_connected():
+
+        raise RuntimeError(
+            "Ethereum RPC connection failed."
+        )
+
+    checksum_address = (
+        Web3.to_checksum_address(
+            wallet_address
+        )
+    )
+
+    balance_wei = (
+        web3.eth.get_balance(
+            checksum_address
+        )
+    )
+
+    balance_eth = Web3.from_wei(
+        balance_wei,
+        "ether",
+    )
+
+    return (
+        checksum_address,
+        balance_wei,
+        Decimal(str(balance_eth)),
+    )
 
 
 # ============================================================
@@ -316,9 +403,11 @@ def get_balances(
 def get_transactions(
     wallet_id: int,
 ):
+
     db = get_db()
 
     try:
+
         return (
             db.query(Transaction)
             .filter(
@@ -333,6 +422,7 @@ def get_transactions(
         )
 
     finally:
+
         db.close()
 
 
@@ -412,6 +502,11 @@ async def start(
 ):
 
     if not update.effective_user:
+
+        return
+
+    if not update.message:
+
         return
 
     telegram_user = (
@@ -466,7 +561,8 @@ async def start(
         await update.message.reply_text(
             "❌ Произошла ошибка при "
             "создании Edaaa Wallet.\n\n"
-            "Попробуйте ещё раз через несколько секунд."
+            "Попробуйте ещё раз через "
+            "несколько секунд."
         )
 
 
@@ -482,9 +578,14 @@ async def button_handler(
 
     query = update.callback_query
 
+    if not query:
+
+        return
+
     await query.answer()
 
     if not query.from_user:
+
         return
 
     telegram_user = (
@@ -628,11 +729,19 @@ async def button_handler(
             "Telegram callback error."
         )
 
-        await query.edit_message_text(
-            "❌ Произошла ошибка.\n\n"
-            "Попробуйте ещё раз.",
-            reply_markup=back_keyboard(),
-        )
+        try:
+
+            await query.edit_message_text(
+                "❌ Произошла ошибка.\n\n"
+                "Попробуйте ещё раз.",
+                reply_markup=back_keyboard(),
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Failed to send Telegram error message."
+            )
 
 
 # ============================================================
@@ -668,27 +777,76 @@ async def show_wallet(
     wallet,
 ):
 
-    balances = get_balances(
-        wallet.id
-    )
+    try:
 
-    eth = balances["ETH"]
-    usdt = balances["USDT"]
+        # ----------------------------------------------------
+        # 1. Получаем USDT из базы
+        # ----------------------------------------------------
 
-    text = (
-        "💰 *Ваш Edaaa Wallet*\n\n"
-        f"Ξ ETH: `{eth}`\n"
-        f"💵 USDT: `{usdt}`\n\n"
-        f"🌐 Сеть: `{wallet.network}`\n\n"
-        "📍 Адрес:\n"
-        f"`{wallet.address}`"
-    )
+        balances = get_balances(
+            wallet.id
+        )
 
-    await query.edit_message_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=back_keyboard(),
-    )
+        usdt = balances["USDT"]
+
+        # ----------------------------------------------------
+        # 2. Получаем реальный ETH из blockchain
+        # ----------------------------------------------------
+
+        (
+            checksum_address,
+            balance_wei,
+            balance_eth,
+        ) = get_real_eth_balance(
+            wallet.address
+        )
+
+        # ----------------------------------------------------
+        # 3. Форматируем баланс
+        # ----------------------------------------------------
+
+        eth_text = (
+            f"{balance_eth:.8f}"
+        )
+
+        usdt_text = (
+            f"{usdt:.2f}"
+        )
+
+        # ----------------------------------------------------
+        # 4. Сообщение
+        # ----------------------------------------------------
+
+        text = (
+            "💰 *Ваш Edaaa Wallet*\n\n"
+            f"Ξ ETH: `{eth_text}`\n"
+            f"💵 USDT: `{usdt_text}`\n\n"
+            f"🌐 Сеть: `{wallet.network}`\n\n"
+            "📍 Адрес:\n"
+            f"`{checksum_address}`\n\n"
+            "🔗 ETH баланс получен "
+            "непосредственно из blockchain."
+        )
+
+        await query.edit_message_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=back_keyboard(),
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Failed to load wallet balance."
+        )
+
+        await query.edit_message_text(
+            "❌ Не удалось получить "
+            "баланс Ethereum.\n\n"
+            "Попробуйте ещё раз через "
+            "несколько секунд.",
+            reply_markup=back_keyboard(),
+        )
 
 
 # ============================================================
@@ -800,9 +958,7 @@ async def show_profile(
 
     else:
 
-        username = (
-            "не указан"
-        )
+        username = "не указан"
 
     text = (
         "👤 *Профиль Edaaa*\n\n"
