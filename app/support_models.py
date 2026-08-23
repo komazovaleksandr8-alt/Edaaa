@@ -69,6 +69,19 @@ class SupportTicket(Base):
         nullable=False,
     )
 
+    # ========================================================
+    # USER
+    # ========================================================
+
+    user = relationship(
+        "User",
+        back_populates="support_tickets",
+    )
+
+    # ========================================================
+    # MESSAGES
+    # ========================================================
+
     messages = relationship(
         "SupportMessage",
         back_populates="ticket",
@@ -116,6 +129,10 @@ class SupportMessage(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+    # ========================================================
+    # TICKET
+    # ========================================================
 
     ticket = relationship(
         "SupportTicket",
