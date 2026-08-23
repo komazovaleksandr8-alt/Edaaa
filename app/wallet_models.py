@@ -1,6 +1,13 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+)
+
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -17,7 +24,10 @@ class Wallet(Base):
 
     user_id = Column(
         Integer,
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+        ),
         nullable=False,
         index=True,
     )
@@ -57,7 +67,3 @@ class Wallet(Base):
         back_populates="wallet",
         cascade="all, delete-orphan",
     )
-
-
-from app.balance_models import Balance
-from app.transaction_models import Transaction
