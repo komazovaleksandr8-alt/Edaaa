@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     Column,
@@ -36,7 +36,6 @@ class SupportTicket(Base):
     category = Column(
         String(50),
         nullable=False,
-        default="general",
     )
 
     subject = Column(
@@ -46,33 +45,28 @@ class SupportTicket(Base):
 
     status = Column(
         String(30),
-        nullable=False,
         default="open",
+        nullable=False,
         index=True,
     )
 
     priority = Column(
-        String(20),
-        nullable=False,
+        String(30),
         default="normal",
+        nullable=False,
     )
 
     created_at = Column(
-        DateTime,
-        default=datetime.utcnow,
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
 
     updated_at = Column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
-    )
-
-    user = relationship(
-        "User",
-        back_populates="support_tickets",
     )
 
     messages = relationship(
@@ -103,9 +97,8 @@ class SupportMessage(Base):
     )
 
     sender_type = Column(
-        String(20),
+        String(30),
         nullable=False,
-        default="user",
     )
 
     sender_id = Column(
@@ -119,8 +112,8 @@ class SupportMessage(Base):
     )
 
     created_at = Column(
-        DateTime,
-        default=datetime.utcnow,
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
 
