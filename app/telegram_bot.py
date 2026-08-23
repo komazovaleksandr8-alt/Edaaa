@@ -12,13 +12,12 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
+
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
-    MessageHandler,
-    filters,
 )
 
 from sqlalchemy.orm import Session
@@ -32,8 +31,15 @@ from app.balance_models import Balance
 from app.transaction_models import Transaction
 from app.wallet_key_models import WalletKey
 
+from app.support_models import (
+    SupportTicket,
+    SupportMessage,
+)
 
-logger = logging.getLogger("edaaa.telegram")
+
+logger = logging.getLogger(
+    "edaaa.telegram"
+)
 
 
 # ============================================================
@@ -51,6 +57,7 @@ def get_db() -> Session:
 
 
 def get_wallet_fernet() -> Fernet:
+
     key = settings.WALLET_ENCRYPTION_KEY
 
     if not key:
@@ -59,15 +66,20 @@ def get_wallet_fernet() -> Fernet:
         )
 
     try:
-        return Fernet(key.encode())
+
+        return Fernet(
+            key.encode()
+        )
 
     except Exception as exc:
+
         raise RuntimeError(
             "Invalid WALLET_ENCRYPTION_KEY."
         ) from exc
 
 
 def create_real_ethereum_wallet():
+
     account = Account.create()
 
     address = Web3.to_checksum_address(
@@ -76,12 +88,16 @@ def create_real_ethereum_wallet():
 
     private_key = account.key.hex()
 
-    return address, private_key
+    return (
+        address,
+        private_key,
+    )
 
 
 def encrypt_private_key(
     private_key: str,
 ) -> str:
+
     fernet = get_wallet_fernet()
 
     encrypted = fernet.encrypt(
@@ -100,16 +116,14 @@ def get_or_create_user(
     telegram_id: int,
     telegram_username: str | None,
 ):
+
     db = get_db()
 
     try:
+
         telegram_id_string = str(
             telegram_id
         )
-
-        # ----------------------------------------------------
-        # Ищем существующего Telegram пользователя
-        # ----------------------------------------------------
 
         user = (
             db.query(User)
@@ -130,10 +144,6 @@ def get_or_create_user(
             db.refresh(user)
 
             return user
-
-        # ----------------------------------------------------
-        # Создаём нового пользователя
-        # ----------------------------------------------------
 
         email = (
             f"telegram_{telegram_id}"
@@ -160,10 +170,6 @@ def get_or_create_user(
         db.add(user)
         db.flush()
 
-        # ----------------------------------------------------
-        # Создаём настоящий Ethereum wallet
-        # ----------------------------------------------------
-
         address, private_key = (
             create_real_ethereum_wallet()
         )
@@ -176,10 +182,6 @@ def get_or_create_user(
 
         db.add(wallet)
         db.flush()
-
-        # ----------------------------------------------------
-        # Шифруем private key
-        # ----------------------------------------------------
 
         encrypted_private_key = (
             encrypt_private_key(
@@ -196,10 +198,6 @@ def get_or_create_user(
 
         db.add(wallet_key)
 
-        # ----------------------------------------------------
-        # ETH balance
-        # ----------------------------------------------------
-
         eth_balance = Balance(
             wallet_id=wallet.id,
             asset="ETH",
@@ -208,10 +206,6 @@ def get_or_create_user(
 
         db.add(eth_balance)
 
-        # ----------------------------------------------------
-        # USDT balance
-        # ----------------------------------------------------
-
         usdt_balance = Balance(
             wallet_id=wallet.id,
             asset="USDT",
@@ -219,10 +213,6 @@ def get_or_create_user(
         )
 
         db.add(usdt_balance)
-
-        # ----------------------------------------------------
-        # Сохраняем всё
-        # ----------------------------------------------------
 
         db.commit()
 
@@ -237,6 +227,7 @@ def get_or_create_user(
         return user
 
     except Exception:
+
         db.rollback()
 
         logger.exception(
@@ -246,12 +237,14 @@ def get_or_create_user(
         raise
 
     finally:
+
         db.close()
 
 
 def get_user_wallet(
     user_id: int,
 ):
+
     db = get_db()
 
     try:
@@ -265,6 +258,7 @@ def get_user_wallet(
         )
 
     finally:
+
         db.close()
 
 
@@ -276,6 +270,7 @@ def get_user_wallet(
 def get_balances(
     wallet_id: int,
 ):
+
     db = get_db()
 
     try:
@@ -299,74 +294,20 @@ def get_balances(
             if balance.asset == "ETH":
 
                 result["ETH"] = Decimal(
-                    str(balance.amount)
+                    balance.amount
                 )
 
             elif balance.asset == "USDT":
 
                 result["USDT"] = Decimal(
-                    str(balance.amount)
+                    balance.amount
                 )
 
         return result
 
     finally:
+
         db.close()
-
-
-# ============================================================
-# LIVE ETH BALANCE
-# ============================================================
-
-
-def get_live_eth_balance(
-    wallet_address: str,
-):
-    if not settings.ETH_RPC_URL:
-        return None
-
-    try:
-
-        web3 = Web3(
-            Web3.HTTPProvider(
-                settings.ETH_RPC_URL,
-                request_kwargs={
-                    "timeout": 15,
-                },
-            )
-        )
-
-        if not web3.is_connected():
-            return None
-
-        checksum_address = (
-            Web3.to_checksum_address(
-                wallet_address
-            )
-        )
-
-        balance_wei = (
-            web3.eth.get_balance(
-                checksum_address
-            )
-        )
-
-        balance_eth = Web3.from_wei(
-            balance_wei,
-            "ether",
-        )
-
-        return Decimal(
-            str(balance_eth)
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Failed to read live ETH balance."
-        )
-
-        return None
 
 
 # ============================================================
@@ -377,6 +318,7 @@ def get_live_eth_balance(
 def get_transactions(
     wallet_id: int,
 ):
+
     db = get_db()
 
     try:
@@ -395,97 +337,119 @@ def get_transactions(
         )
 
     finally:
+
         db.close()
 
 
 # ============================================================
-# FORMAT HELPERS
+# SUPPORT
 # ============================================================
 
 
-def format_amount(
-    amount,
-    max_decimals: int = 8,
-) -> str:
+def create_support_ticket(
+    user_id: int,
+    category: str,
+    subject: str,
+    message: str,
+):
+
+    db = get_db()
 
     try:
 
-        value = Decimal(
-            str(amount)
+        ticket = SupportTicket(
+            user_id=user_id,
+            category=category,
+            subject=subject,
+            status="open",
+            priority="normal",
         )
 
-        formatted = (
-            f"{value:.{max_decimals}f}"
+        db.add(ticket)
+
+        db.flush()
+
+        support_message = SupportMessage(
+            ticket_id=ticket.id,
+            sender_type="user",
+            sender_id=user_id,
+            message=message,
         )
 
-        formatted = formatted.rstrip(
-            "0"
-        ).rstrip(".")
+        db.add(
+            support_message
+        )
 
-        if formatted in (
-            "",
-            "-0",
-        ):
-            return "0"
+        db.commit()
 
-        return formatted
+        db.refresh(ticket)
+
+        return ticket
 
     except Exception:
 
-        return str(amount)
+        db.rollback()
+
+        logger.exception(
+            "Failed to create support ticket."
+        )
+
+        raise
+
+    finally:
+
+        db.close()
 
 
-def shorten_hash(
-    tx_hash: str | None,
-) -> str:
+def get_user_support_tickets(
+    user_id: int,
+):
 
-    if not tx_hash:
-        return "—"
+    db = get_db()
 
-    if len(tx_hash) <= 18:
-        return tx_hash
+    try:
 
-    return (
-        f"{tx_hash[:10]}"
-        "..."
-        f"{tx_hash[-8:]}"
-    )
+        return (
+            db.query(SupportTicket)
+            .filter(
+                SupportTicket.user_id
+                == user_id
+            )
+            .order_by(
+                SupportTicket.created_at.desc()
+            )
+            .limit(20)
+            .all()
+        )
 
+    finally:
 
-def transaction_type_text(
-    transaction_type: str,
-) -> str:
-
-    mapping = {
-        "deposit": "📥 Депозит",
-        "withdraw": "📤 Вывод",
-        "send": "📤 Отправка",
-        "receive": "📥 Получение",
-        "buy": "💱 Покупка",
-        "sell": "💵 Продажа",
-    }
-
-    return mapping.get(
-        transaction_type,
-        f"📄 {transaction_type}",
-    )
+        db.close()
 
 
-def transaction_status_text(
-    status: str,
-) -> str:
+def get_support_ticket(
+    user_id: int,
+    ticket_id: int,
+):
 
-    mapping = {
-        "completed": "✅ Подтверждён",
-        "confirmed": "✅ Подтверждён",
-        "pending": "⏳ Ожидает подтверждения",
-        "failed": "❌ Ошибка",
-    }
+    db = get_db()
 
-    return mapping.get(
-        status,
-        f"ℹ️ {status}",
-    )
+    try:
+
+        return (
+            db.query(SupportTicket)
+            .filter(
+                SupportTicket.id
+                == ticket_id,
+                SupportTicket.user_id
+                == user_id,
+            )
+            .first()
+        )
+
+    finally:
+
+        db.close()
 
 
 # ============================================================
@@ -535,6 +499,12 @@ def main_keyboard():
                     callback_data="profile",
                 ),
             ],
+            [
+                InlineKeyboardButton(
+                    "👨‍💻 Поддержка",
+                    callback_data="support",
+                ),
+            ],
         ]
     )
 
@@ -553,30 +523,20 @@ def back_keyboard():
     )
 
 
-def wallet_keyboard():
+def support_keyboard():
 
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "🔄 Обновить баланс",
-                    callback_data="refresh_wallet",
+                    "📝 Новое обращение",
+                    callback_data="support_new",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "📥 Пополнить",
-                    callback_data="deposit",
-                ),
-                InlineKeyboardButton(
-                    "📤 Отправить",
-                    callback_data="send",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "📜 История",
-                    callback_data="history",
+                    "📂 Мои обращения",
+                    callback_data="support_my",
                 )
             ],
             [
@@ -589,20 +549,46 @@ def wallet_keyboard():
     )
 
 
-def history_keyboard():
+def support_categories_keyboard():
 
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "🔄 Обновить",
-                    callback_data="history",
+                    "💱 P2P",
+                    callback_data="support_cat_p2p",
+                ),
+                InlineKeyboardButton(
+                    "💰 Кошелёк",
+                    callback_data="support_cat_wallet",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "📥 Депозит",
+                    callback_data="support_cat_deposit",
+                ),
+                InlineKeyboardButton(
+                    "📤 Вывод",
+                    callback_data="support_cat_withdraw",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⚙️ Техническая проблема",
+                    callback_data="support_cat_technical",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "⬅️ Главное меню",
-                    callback_data="main",
+                    "❓ Другое",
+                    callback_data="support_cat_general",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Назад",
+                    callback_data="support",
                 )
             ],
         ]
@@ -620,9 +606,6 @@ async def start(
 ):
 
     if not update.effective_user:
-        return
-
-    if not update.message:
         return
 
     telegram_user = (
@@ -677,7 +660,7 @@ async def start(
         await update.message.reply_text(
             "❌ Произошла ошибка при "
             "создании Edaaa Wallet.\n\n"
-            "Попробуйте ещё раз."
+            "Попробуйте ещё раз через несколько секунд."
         )
 
 
@@ -692,9 +675,6 @@ async def button_handler(
 ):
 
     query = update.callback_query
-
-    if not query:
-        return
 
     await query.answer()
 
@@ -749,18 +729,6 @@ async def button_handler(
             )
 
         # ====================================================
-        # REFRESH WALLET
-        # ====================================================
-
-        elif query.data == "refresh_wallet":
-
-            await show_wallet(
-                query,
-                wallet,
-                refresh=True,
-            )
-
-        # ====================================================
         # DEPOSIT
         # ====================================================
 
@@ -777,8 +745,20 @@ async def button_handler(
 
         elif query.data == "send":
 
-            await show_send(
-                query,
+            await query.edit_message_text(
+                "📤 *Отправка ETH*\n\n"
+                "Функция отправки уже реализована "
+                "в Edaaa API.\n\n"
+                "Сейчас мы подключаем её к "
+                "Telegram-интерфейсу.\n\n"
+                "Следующим этапом добавим:\n"
+                "1️⃣ Адрес получателя\n"
+                "2️⃣ Сумму\n"
+                "3️⃣ Подтверждение\n"
+                "4️⃣ Отправку транзакции\n"
+                "5️⃣ TX Hash",
+                parse_mode="Markdown",
+                reply_markup=back_keyboard(),
             )
 
         # ====================================================
@@ -793,7 +773,7 @@ async def button_handler(
             )
 
         # ====================================================
-        # BUY
+        # BUY USDT
         # ====================================================
 
         elif query.data == "buy_usdt":
@@ -803,13 +783,13 @@ async def button_handler(
                 "P2P-модуль пока находится "
                 "в разработке.\n\n"
                 "Следующим этапом подключим "
-                "заявки на покупку USDT.",
+                "полноценные P2P-сделки.",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard(),
             )
 
         # ====================================================
-        # SELL
+        # SELL USDT
         # ====================================================
 
         elif query.data == "sell_usdt":
@@ -819,7 +799,7 @@ async def button_handler(
                 "P2P-модуль пока находится "
                 "в разработке.\n\n"
                 "Следующим этапом подключим "
-                "заявки на продажу USDT.",
+                "полноценные P2P-сделки.",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard(),
             )
@@ -836,25 +816,279 @@ async def button_handler(
                 wallet,
             )
 
+        # ====================================================
+        # SUPPORT
+        # ====================================================
+
+        elif query.data == "support":
+
+            await show_support(
+                query
+            )
+
+        # ====================================================
+        # SUPPORT NEW
+        # ====================================================
+
+        elif query.data == "support_new":
+
+            await show_support_categories(
+                query
+            )
+
+        # ====================================================
+        # SUPPORT CATEGORY
+        # ====================================================
+
+        elif query.data.startswith(
+            "support_cat_"
+        ):
+
+            category = (
+                query.data.replace(
+                    "support_cat_",
+                    "",
+                )
+            )
+
+            context.user_data[
+                "support_category"
+            ] = category
+
+            await query.edit_message_text(
+                "📝 *Новое обращение*\n\n"
+                f"Категория: `{category}`\n\n"
+                "Теперь отправьте следующим "
+                "сообщением тему обращения.\n\n"
+                "Например:\n"
+                "`Не пришёл депозит`",
+                parse_mode="Markdown",
+                reply_markup=back_keyboard(),
+            )
+
+            context.user_data[
+                "support_waiting_subject"
+            ] = True
+
+        # ====================================================
+        # MY SUPPORT
+        # ====================================================
+
+        elif query.data == "support_my":
+
+            await show_my_support(
+                query,
+                user,
+            )
+
+        # ====================================================
+        # OPEN TICKET
+        # ====================================================
+
+        elif query.data.startswith(
+            "support_ticket_"
+        ):
+
+            ticket_id = int(
+                query.data.replace(
+                    "support_ticket_",
+                    "",
+                )
+            )
+
+            await show_support_ticket(
+                query,
+                user,
+                ticket_id,
+            )
+
     except Exception:
 
         logger.exception(
             "Telegram callback error."
         )
 
-        try:
+        await query.edit_message_text(
+            "❌ Произошла ошибка.\n\n"
+            "Попробуйте ещё раз.",
+            reply_markup=back_keyboard(),
+        )
 
-            await query.edit_message_text(
-                "❌ Произошла ошибка.\n\n"
-                "Попробуйте ещё раз.",
-                reply_markup=back_keyboard(),
+
+# ============================================================
+# SUPPORT SCREEN
+# ============================================================
+
+
+async def show_support(
+    query,
+):
+
+    text = (
+        "👨‍💻 *Поддержка Edaaa*\n\n"
+        "Здесь вы можете обратиться "
+        "в службу поддержки.\n\n"
+        "Мы рекомендуем указывать:\n"
+        "• номер сделки;\n"
+        "• TX Hash;\n"
+        "• адрес кошелька;\n"
+        "• подробное описание проблемы.\n\n"
+        "Выберите действие:"
+    )
+
+    await query.edit_message_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=support_keyboard(),
+    )
+
+
+async def show_support_categories(
+    query,
+):
+
+    text = (
+        "📝 *Создание обращения*\n\n"
+        "Выберите категорию:"
+    )
+
+    await query.edit_message_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=support_categories_keyboard(),
+    )
+
+
+async def show_my_support(
+    query,
+    user,
+):
+
+    tickets = get_user_support_tickets(
+        user.id
+    )
+
+    if not tickets:
+
+        await query.edit_message_text(
+            "📂 *Мои обращения*\n\n"
+            "У вас пока нет обращений.",
+            parse_mode="Markdown",
+            reply_markup=support_keyboard(),
+        )
+
+        return
+
+    buttons = []
+
+    for ticket in tickets:
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    f"#{ticket.id} — {ticket.subject[:30]}",
+                    callback_data=(
+                        f"support_ticket_{ticket.id}"
+                    ),
+                )
+            ]
+        )
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                "⬅️ Назад",
+                callback_data="support",
+            )
+        ]
+    )
+
+    await query.edit_message_text(
+        "📂 *Мои обращения*\n\n"
+        "Выберите обращение:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        ),
+    )
+
+
+async def show_support_ticket(
+    query,
+    user,
+    ticket_id: int,
+):
+
+    ticket = get_support_ticket(
+        user.id,
+        ticket_id,
+    )
+
+    if not ticket:
+
+        await query.edit_message_text(
+            "❌ Обращение не найдено.",
+            reply_markup=support_keyboard(),
+        )
+
+        return
+
+    db = get_db()
+
+    try:
+
+        messages = (
+            db.query(SupportMessage)
+            .filter(
+                SupportMessage.ticket_id
+                == ticket.id
+            )
+            .order_by(
+                SupportMessage.created_at.asc()
+            )
+            .all()
+        )
+
+        lines = [
+            f"🎫 *Обращение #{ticket.id}*",
+            "",
+            f"Тема: *{ticket.subject}*",
+            f"Категория: `{ticket.category}`",
+            f"Статус: `{ticket.status}`",
+            "",
+        ]
+
+        for message in messages:
+
+            sender = (
+                "👤 Вы"
+                if message.sender_type == "user"
+                else "👨‍💻 Поддержка"
             )
 
-        except Exception:
-
-            logger.exception(
-                "Failed to send Telegram error message."
+            lines.append(
+                f"{sender}:"
             )
+
+            lines.append(
+                message.message
+            )
+
+            lines.append("")
+
+        text = "\n".join(
+            lines
+        )
+
+        await query.edit_message_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=support_keyboard(),
+        )
+
+    finally:
+
+        db.close()
 
 
 # ============================================================
@@ -888,7 +1122,6 @@ async def show_main(
 async def show_wallet(
     query,
     wallet,
-    refresh: bool = False,
 ):
 
     balances = get_balances(
@@ -898,58 +1131,19 @@ async def show_wallet(
     eth = balances["ETH"]
     usdt = balances["USDT"]
 
-    live_eth = get_live_eth_balance(
-        wallet.address
+    text = (
+        "💰 *Ваш Edaaa Wallet*\n\n"
+        f"Ξ ETH: `{eth}`\n"
+        f"💵 USDT: `{usdt}`\n\n"
+        f"🌐 Сеть: `{wallet.network}`\n\n"
+        "📍 Адрес:\n"
+        f"`{wallet.address}`"
     )
-
-    if live_eth is not None:
-
-        blockchain_eth = live_eth
-
-    else:
-
-        blockchain_eth = None
-
-    if refresh:
-
-        if blockchain_eth is not None:
-
-            live_text = (
-                f"`{format_amount(blockchain_eth)} ETH`"
-            )
-
-        else:
-
-            live_text = (
-                f"`{format_amount(eth)} ETH`"
-            )
-
-        text = (
-            "💰 *Баланс обновлён*\n\n"
-            f"Ξ ETH: {live_text}\n"
-            f"💵 USDT: `{format_amount(usdt)}`\n\n"
-            f"🌐 Сеть: `{wallet.network}`\n\n"
-            "📍 Адрес:\n"
-            f"`{wallet.address}`\n\n"
-            "ℹ️ Баланс блокчейна проверен "
-            "напрямую через Ethereum RPC."
-        )
-
-    else:
-
-        text = (
-            "💰 *Ваш Edaaa Wallet*\n\n"
-            f"Ξ ETH: `{format_amount(eth)}`\n"
-            f"💵 USDT: `{format_amount(usdt)}`\n\n"
-            f"🌐 Сеть: `{wallet.network}`\n\n"
-            "📍 Адрес:\n"
-            f"`{wallet.address}`"
-        )
 
     await query.edit_message_text(
         text,
         parse_mode="Markdown",
-        reply_markup=wallet_keyboard(),
+        reply_markup=back_keyboard(),
     )
 
 
@@ -970,45 +1164,8 @@ async def show_deposit(
         f"🌐 Сеть: `{wallet.network}`\n\n"
         "⚠️ Обязательно проверяйте сеть "
         "перед отправкой.\n\n"
-        "После получения необходимого "
-        "количества подтверждений "
-        "депозит автоматически появится "
-        "в вашем балансе и истории.\n\n"
-        "🔐 Private key никогда не "
-        "показывается в Telegram."
-    )
-
-    await query.edit_message_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=back_keyboard(),
-    )
-
-
-# ============================================================
-# SEND
-# ============================================================
-
-
-async def show_send(
-    query,
-):
-
-    text = (
-        "📤 *Отправка ETH*\n\n"
-        "Функция отправки через Telegram "
-        "готовится к подключению.\n\n"
-        "Будет доступно:\n\n"
-        "1️⃣ Адрес получателя\n"
-        "2️⃣ Сумма ETH\n"
-        "3️⃣ Проверка баланса\n"
-        "4️⃣ Расчёт комиссии Gas\n"
-        "5️⃣ Подтверждение операции\n"
-        "6️⃣ Подписание транзакции\n"
-        "7️⃣ Отправка в Ethereum\n"
-        "8️⃣ TX Hash\n\n"
-        "🔐 Private key пользователю "
-        "не показывается."
+        "После подтверждения транзакции "
+        "баланс будет отображён в Edaaa."
     )
 
     await query.edit_message_text(
@@ -1046,74 +1203,14 @@ async def show_history(
             "",
         ]
 
-        for index, transaction in enumerate(
-            transactions,
-            start=1,
-        ):
-
-            tx_type = (
-                transaction.type
-            )
-
-            amount = (
-                transaction.amount
-            )
-
-            asset = (
-                transaction.asset
-            )
-
-            tx_status = (
-                transaction.status
-            )
-
-            tx_hash = (
-                transaction.tx_hash
-            )
-
-            type_text = (
-                transaction_type_text(
-                    tx_type
-                )
-            )
-
-            status_text = (
-                transaction_status_text(
-                    tx_status
-                )
-            )
-
-            amount_text = (
-                format_amount(
-                    amount
-                )
-            )
-
-            hash_text = (
-                shorten_hash(
-                    tx_hash
-                )
-            )
+        for transaction in transactions:
 
             lines.append(
-                f"*{index}. {type_text}*"
+                f"• {transaction.type} — "
+                f"{transaction.amount} "
+                f"{transaction.asset} — "
+                f"{transaction.status}"
             )
-
-            lines.append(
-                f"💰 `{amount_text} {asset}`"
-            )
-
-            lines.append(
-                f"{status_text}"
-            )
-
-            if tx_hash:
-
-                lines.append(
-                    f"🔗 `{hash_text}`"
-                )
-
-            lines.append("")
 
         text = "\n".join(
             lines
@@ -1122,7 +1219,7 @@ async def show_history(
     await query.edit_message_text(
         text,
         parse_mode="Markdown",
-        reply_markup=history_keyboard(),
+        reply_markup=back_keyboard(),
     )
 
 
@@ -1175,16 +1272,121 @@ async def text_message_handler(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
+    if not update.effective_user:
+        return
+
     if not update.message:
         return
 
-    await update.message.reply_text(
-        "🏦 *Edaaa Wallet*\n\n"
-        "Используйте кнопки меню для работы "
-        "с кошельком.",
-        parse_mode="Markdown",
-        reply_markup=main_keyboard(),
+    if not update.message.text:
+        return
+
+    user = get_or_create_user(
+        telegram_id=(
+            update.effective_user.id
+        ),
+        telegram_username=(
+            update.effective_user.username
+        ),
     )
+
+    text = update.message.text.strip()
+
+    # ========================================================
+    # SUBJECT
+    # ========================================================
+
+    if context.user_data.get(
+        "support_waiting_subject"
+    ):
+
+        context.user_data[
+            "support_subject"
+        ] = text
+
+        context.user_data[
+            "support_waiting_subject"
+        ] = False
+
+        context.user_data[
+            "support_waiting_message"
+        ] = True
+
+        await update.message.reply_text(
+            "✍️ Теперь опишите проблему "
+            "подробно.\n\n"
+            "Можно указать номер сделки, "
+            "TX Hash и другие детали."
+        )
+
+        return
+
+    # ========================================================
+    # MESSAGE
+    # ========================================================
+
+    if context.user_data.get(
+        "support_waiting_message"
+    ):
+
+        category = context.user_data.get(
+            "support_category",
+            "general",
+        )
+
+        subject = context.user_data.get(
+            "support_subject",
+            "Обращение пользователя",
+        )
+
+        try:
+
+            ticket = create_support_ticket(
+                user_id=user.id,
+                category=category,
+                subject=subject,
+                message=text,
+            )
+
+            context.user_data.pop(
+                "support_category",
+                None,
+            )
+
+            context.user_data.pop(
+                "support_subject",
+                None,
+            )
+
+            context.user_data.pop(
+                "support_waiting_message",
+                None,
+            )
+
+            await update.message.reply_text(
+                "✅ *Обращение создано!*\n\n"
+                f"🎫 Номер: `#{ticket.id}`\n"
+                f"📌 Тема: `{ticket.subject}`\n"
+                f"📂 Категория: `{ticket.category}`\n"
+                f"📊 Статус: `{ticket.status}`\n\n"
+                "Поддержка рассмотрит ваше "
+                "обращение.",
+                parse_mode="Markdown",
+                reply_markup=support_keyboard(),
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Failed to create support ticket."
+            )
+
+            await update.message.reply_text(
+                "❌ Не удалось создать обращение.\n\n"
+                "Попробуйте ещё раз."
+            )
+
+        return
 
 
 # ============================================================
@@ -1227,10 +1429,6 @@ def create_telegram_application():
         .build()
     )
 
-    # --------------------------------------------------------
-    # /start
-    # --------------------------------------------------------
-
     application.add_handler(
         CommandHandler(
             "start",
@@ -1238,31 +1436,38 @@ def create_telegram_application():
         )
     )
 
-    # --------------------------------------------------------
-    # Inline buttons
-    # --------------------------------------------------------
-
     application.add_handler(
         CallbackQueryHandler(
             button_handler
         )
     )
 
-    # --------------------------------------------------------
-    # обычные сообщения
-    # --------------------------------------------------------
-
     application.add_handler(
-        MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
+        # Обрабатываем обычные текстовые сообщения.
+        # В дальнейшем здесь же сделаем
+        # сообщения P2P и апелляций.
+        __import__(
+            "telegram.ext",
+            fromlist=[
+                "MessageHandler",
+                "filters",
+            ],
+        ).MessageHandler(
+            __import__(
+                "telegram.ext",
+                fromlist=[
+                    "filters",
+                ],
+            ).filters.TEXT
+            & ~__import__(
+                "telegram.ext",
+                fromlist=[
+                    "filters",
+                ],
+            ).filters.COMMAND,
             text_message_handler,
         )
     )
-
-    # --------------------------------------------------------
-    # errors
-    # --------------------------------------------------------
 
     application.add_error_handler(
         error_handler
