@@ -1,7 +1,16 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
+
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -9,6 +18,14 @@ from app.database import Base
 
 class Balance(Base):
     __tablename__ = "balances"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "wallet_id",
+            "asset",
+            name="uq_balances_wallet_asset",
+        ),
+    )
 
     id = Column(
         Integer,
@@ -18,7 +35,10 @@ class Balance(Base):
 
     wallet_id = Column(
         Integer,
-        ForeignKey("wallets.id", ondelete="CASCADE"),
+        ForeignKey(
+            "wallets.id",
+            ondelete="CASCADE",
+        ),
         nullable=False,
         index=True,
     )
@@ -31,15 +51,24 @@ class Balance(Base):
     )
 
     amount = Column(
-        Numeric(30, 18),
+        Numeric(
+            30,
+            18,
+        ),
         nullable=False,
         default=Decimal("0"),
     )
 
     updated_at = Column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        DateTime(
+            timezone=True
+        ),
+        default=lambda: datetime.now(
+            timezone.utc
+        ),
+        onupdate=lambda: datetime.now(
+            timezone.utc
+        ),
         nullable=False,
     )
 
