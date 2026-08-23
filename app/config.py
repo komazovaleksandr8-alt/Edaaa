@@ -14,17 +14,17 @@ class Settings:
 
     APP_VERSION: str = os.getenv(
         "APP_VERSION",
-        "0.1.0",
+        "1.0.0",
     )
 
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
-        "sqlite:///./edaaa.db",
+        "",
     )
 
     JWT_SECRET: str = os.getenv(
         "JWT_SECRET",
-        "CHANGE_THIS_SECRET_IN_PRODUCTION",
+        "",
     )
 
     ETH_RPC_URL: str = os.getenv(
@@ -49,6 +49,11 @@ class Settings:
 
     ADMIN_SETUP_KEY: str = os.getenv(
         "ADMIN_SETUP_KEY",
+        "",
+    )
+
+    ADMIN_TELEGRAM_ID: str = os.getenv(
+        "ADMIN_TELEGRAM_ID",
         "",
     )
 
