@@ -1,4 +1,5 @@
 import logging
+import os
 import secrets
 from decimal import Decimal
 
@@ -65,6 +66,129 @@ def get_db() -> Session:
 
 
 # ============================================================
+# ADMIN
+# ============================================================
+
+
+def get_admin_telegram_id() -> int | None:
+    """
+    Получает Telegram ID администратора
+    из переменной окружения ADMIN_TELEGRAM_ID.
+
+    Пример:
+
+    ADMIN_TELEGRAM_ID=123456789
+    """
+
+    value = os.getenv(
+        "ADMIN_TELEGRAM_ID"
+    )
+
+    if not value:
+        logger.warning(
+            "ADMIN_TELEGRAM_ID is not configured."
+        )
+        return None
+
+    try:
+        return int(value)
+
+    except ValueError:
+        logger.error(
+            "ADMIN_TELEGRAM_ID must be an integer."
+        )
+        return None
+
+
+async def notify_admin_about_ticket(
+    context: ContextTypes.DEFAULT_TYPE,
+    ticket_id: int,
+    user: User,
+    category: str,
+    subject: str,
+    message_text: str,
+):
+    """
+    Отправляет администратору уведомление
+    о новом обращении пользователя.
+
+    Ошибка отправки админу НЕ ломает создание
+    тикета в базе данных.
+    """
+
+    admin_telegram_id = (
+        get_admin_telegram_id()
+    )
+
+    if not admin_telegram_id:
+        logger.warning(
+            "Support ticket #%s created, "
+            "but ADMIN_TELEGRAM_ID is not configured.",
+            ticket_id,
+        )
+        return
+
+    telegram_username = (
+        f"@{user.telegram_username}"
+        if user.telegram_username
+        else "не указан"
+    )
+
+    text = (
+        "🚨 *НОВОЕ ОБРАЩЕНИЕ В ПОДДЕРЖКУ EDAAA*\n\n"
+        f"🎫 Номер: `#{ticket_id}`\n"
+        f"📂 Категория: *{category}*\n"
+        f"📌 Тема: *{subject}*\n\n"
+        "👤 *Пользователь*\n"
+        f"Telegram: `{telegram_username}`\n"
+        f"Edaaa User ID: `{user.id}`\n"
+        f"Telegram ID: `{user.telegram_id}`\n\n"
+        "💬 *Сообщение*\n"
+        f"{message_text}\n\n"
+        "⚠️ Не запрашивайте у пользователя "
+        "private key или seed-фразу."
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📨 Открыть обращение",
+                    callback_data=(
+                        f"admin_ticket_{ticket_id}"
+                    ),
+                )
+            ]
+        ]
+    )
+
+    try:
+
+        await context.bot.send_message(
+            chat_id=admin_telegram_id,
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
+        logger.info(
+            "Support notification sent to admin | "
+            "ticket=%s | "
+            "admin=%s",
+            ticket_id,
+            admin_telegram_id,
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Failed to notify admin about "
+            "support ticket #%s.",
+            ticket_id,
+        )
+
+
+# ============================================================
 # WALLET SECURITY
 # ============================================================
 
@@ -79,11 +203,13 @@ def get_wallet_fernet() -> Fernet:
         )
 
     try:
+
         return Fernet(
             key.encode()
         )
 
     except Exception as exc:
+
         raise RuntimeError(
             "Invalid WALLET_ENCRYPTION_KEY."
         ) from exc
@@ -832,6 +958,23 @@ async def support_message(
 
             db.close()
 
+        # ====================================================
+        # NOTIFY ADMIN
+        # ====================================================
+
+        await notify_admin_about_ticket(
+            context=context,
+            ticket_id=ticket_id,
+            user=user,
+            category=category,
+            subject=subject,
+            message_text=message_text,
+        )
+
+        # ====================================================
+        # CLEAR SUPPORT STATE
+        # ====================================================
+
         context.user_data.pop(
             "support_category",
             None,
@@ -847,12 +990,17 @@ async def support_message(
             None,
         )
 
+        # ====================================================
+        # CLIENT RESPONSE
+        # ====================================================
+
         await update.message.reply_text(
             "✅ *Обращение создано!*\n\n"
             f"🎫 Номер обращения: `#{ticket_id}`\n"
             f"📂 Категория: *{category}*\n"
             f"📌 Тема: *{subject}*\n\n"
-            "Ваше сообщение получено.\n"
+            "Ваше сообщение получено "
+            "и передано в службу поддержки.\n\n"
             "Сотрудник поддержки сможет "
             "ответить на него.\n\n"
             "⚠️ Никому не отправляйте "
@@ -1069,6 +1217,144 @@ async def show_support(
 
 
 # ============================================================
+# ADMIN SHOW TICKET
+# ============================================================
+
+
+async def show_admin_ticket(
+    query,
+    ticket_id: int,
+):
+
+    admin_telegram_id = (
+        get_admin_telegram_id()
+    )
+
+    if (
+        not admin_telegram_id
+        or query.from_user.id
+        != admin_telegram_id
+    ):
+
+        await query.answer(
+            "⛔ Доступ запрещён.",
+            show_alert=True,
+        )
+
+        return
+
+    db = get_db()
+
+    try:
+
+        ticket = (
+            db.query(SupportTicket)
+            .filter(
+                SupportTicket.id
+                == ticket_id
+            )
+            .first()
+        )
+
+        if not ticket:
+
+            await query.edit_message_text(
+                "❌ Обращение не найдено."
+            )
+
+            return
+
+        user = (
+            db.query(User)
+            .filter(
+                User.id == ticket.user_id
+            )
+            .first()
+        )
+
+        messages = (
+            db.query(SupportMessage)
+            .filter(
+                SupportMessage.ticket_id
+                == ticket.id
+            )
+            .order_by(
+                SupportMessage.created_at.asc()
+            )
+            .all()
+        )
+
+        telegram_username = (
+            f"@{user.telegram_username}"
+            if user and user.telegram_username
+            else "не указан"
+        )
+
+        lines = [
+            "🛡 *Панель поддержки Edaaa*",
+            "",
+            f"🎫 Обращение `#{ticket.id}`",
+            f"📂 Категория: *{ticket.category}*",
+            f"📌 Тема: *{ticket.subject}*",
+            f"📊 Статус: *{ticket.status}*",
+            f"🔥 Приоритет: *{ticket.priority}*",
+            "",
+            "👤 *Пользователь*",
+            f"Telegram: `{telegram_username}`",
+            f"User ID: `{ticket.user_id}`",
+            "",
+            "💬 *Переписка*",
+            "",
+        ]
+
+        for message in messages:
+
+            if message.sender_type == "user":
+
+                sender = "👤 Пользователь"
+
+            elif message.sender_type == "admin":
+
+                sender = "🛡 Администратор"
+
+            else:
+
+                sender = "🤖 Edaaa"
+
+            lines.append(
+                f"{sender}:\n"
+                f"{message.message}\n"
+            )
+
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔄 Обновить",
+                            callback_data=(
+                                f"admin_ticket_{ticket.id}"
+                            ),
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "🏠 Главное меню",
+                            callback_data="main",
+                        )
+                    ],
+                ]
+            ),
+        )
+
+    finally:
+
+        db.close()
+
+
+# ============================================================
 # CALLBACK HANDLER
 # ============================================================
 
@@ -1090,6 +1376,47 @@ async def button_handler(
     )
 
     try:
+
+        # ====================================================
+        # ADMIN TICKET
+        # ====================================================
+
+        if query.data.startswith(
+            "admin_ticket_"
+        ):
+
+            ticket_id_string = (
+                query.data.replace(
+                    "admin_ticket_",
+                    "",
+                    1,
+                )
+            )
+
+            try:
+
+                ticket_id = int(
+                    ticket_id_string
+                )
+
+            except ValueError:
+
+                await query.edit_message_text(
+                    "❌ Некорректный номер обращения."
+                )
+
+                return
+
+            await show_admin_ticket(
+                query,
+                ticket_id,
+            )
+
+            return
+
+        # ====================================================
+        # USER
+        # ====================================================
 
         user = get_or_create_user(
             telegram_id=telegram_user.id,
