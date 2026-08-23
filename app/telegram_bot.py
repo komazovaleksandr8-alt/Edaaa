@@ -12,12 +12,14 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
-
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
 )
 
 from sqlalchemy.orm import Session
@@ -25,7 +27,9 @@ from sqlalchemy.orm import Session
 from app.auth import hash_password
 from app.config import settings
 from app.database import SessionLocal
+
 from app.models import User
+
 from app.wallet_models import Wallet
 from app.balance_models import Balance
 from app.transaction_models import Transaction
@@ -40,6 +44,15 @@ from app.support_models import (
 logger = logging.getLogger(
     "edaaa.telegram"
 )
+
+
+# ============================================================
+# SUPPORT STATES
+# ============================================================
+
+SUPPORT_CATEGORY = 1
+SUPPORT_SUBJECT = 2
+SUPPORT_MESSAGE = 3
 
 
 # ============================================================
@@ -66,13 +79,11 @@ def get_wallet_fernet() -> Fernet:
         )
 
     try:
-
         return Fernet(
             key.encode()
         )
 
     except Exception as exc:
-
         raise RuntimeError(
             "Invalid WALLET_ENCRYPTION_KEY."
         ) from exc
@@ -150,8 +161,8 @@ def get_or_create_user(
             "@edaaa.local"
         )
 
-        random_password = secrets.token_urlsafe(
-            32
+        random_password = (
+            secrets.token_urlsafe(32)
         )
 
         user = User(
@@ -168,6 +179,7 @@ def get_or_create_user(
         )
 
         db.add(user)
+
         db.flush()
 
         address, private_key = (
@@ -181,6 +193,7 @@ def get_or_create_user(
         )
 
         db.add(wallet)
+
         db.flush()
 
         encrypted_private_key = (
@@ -342,118 +355,7 @@ def get_transactions(
 
 
 # ============================================================
-# SUPPORT
-# ============================================================
-
-
-def create_support_ticket(
-    user_id: int,
-    category: str,
-    subject: str,
-    message: str,
-):
-
-    db = get_db()
-
-    try:
-
-        ticket = SupportTicket(
-            user_id=user_id,
-            category=category,
-            subject=subject,
-            status="open",
-            priority="normal",
-        )
-
-        db.add(ticket)
-
-        db.flush()
-
-        support_message = SupportMessage(
-            ticket_id=ticket.id,
-            sender_type="user",
-            sender_id=user_id,
-            message=message,
-        )
-
-        db.add(
-            support_message
-        )
-
-        db.commit()
-
-        db.refresh(ticket)
-
-        return ticket
-
-    except Exception:
-
-        db.rollback()
-
-        logger.exception(
-            "Failed to create support ticket."
-        )
-
-        raise
-
-    finally:
-
-        db.close()
-
-
-def get_user_support_tickets(
-    user_id: int,
-):
-
-    db = get_db()
-
-    try:
-
-        return (
-            db.query(SupportTicket)
-            .filter(
-                SupportTicket.user_id
-                == user_id
-            )
-            .order_by(
-                SupportTicket.created_at.desc()
-            )
-            .limit(20)
-            .all()
-        )
-
-    finally:
-
-        db.close()
-
-
-def get_support_ticket(
-    user_id: int,
-    ticket_id: int,
-):
-
-    db = get_db()
-
-    try:
-
-        return (
-            db.query(SupportTicket)
-            .filter(
-                SupportTicket.id
-                == ticket_id,
-                SupportTicket.user_id
-                == user_id,
-            )
-            .first()
-        )
-
-    finally:
-
-        db.close()
-
-
-# ============================================================
-# KEYBOARDS
+# MAIN KEYBOARD
 # ============================================================
 
 
@@ -495,14 +397,14 @@ def main_keyboard():
             ],
             [
                 InlineKeyboardButton(
-                    "👤 Профиль",
-                    callback_data="profile",
+                    "🆘 Поддержка",
+                    callback_data="support",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    "👨‍💻 Поддержка",
-                    callback_data="support",
+                    "👤 Профиль",
+                    callback_data="profile",
                 ),
             ],
         ]
@@ -523,21 +425,46 @@ def back_keyboard():
     )
 
 
+# ============================================================
+# SUPPORT KEYBOARDS
+# ============================================================
+
+
 def support_keyboard():
 
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "📝 Новое обращение",
-                    callback_data="support_new",
-                )
+                    "💰 Пополнение",
+                    callback_data="support_cat_deposit",
+                ),
+                InlineKeyboardButton(
+                    "📤 Вывод",
+                    callback_data="support_cat_withdraw",
+                ),
             ],
             [
                 InlineKeyboardButton(
-                    "📂 Мои обращения",
-                    callback_data="support_my",
-                )
+                    "💱 P2P",
+                    callback_data="support_cat_p2p",
+                ),
+                InlineKeyboardButton(
+                    "💵 USDT",
+                    callback_data="support_cat_usdt",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔐 Безопасность",
+                    callback_data="support_cat_security",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⚠️ Другое",
+                    callback_data="support_cat_other",
+                ),
             ],
             [
                 InlineKeyboardButton(
@@ -549,48 +476,16 @@ def support_keyboard():
     )
 
 
-def support_categories_keyboard():
+def support_cancel_keyboard():
 
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "💱 P2P",
-                    callback_data="support_cat_p2p",
-                ),
-                InlineKeyboardButton(
-                    "💰 Кошелёк",
-                    callback_data="support_cat_wallet",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "📥 Депозит",
-                    callback_data="support_cat_deposit",
-                ),
-                InlineKeyboardButton(
-                    "📤 Вывод",
-                    callback_data="support_cat_withdraw",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⚙️ Техническая проблема",
-                    callback_data="support_cat_technical",
+                    "❌ Отмена",
+                    callback_data="support_cancel",
                 )
-            ],
-            [
-                InlineKeyboardButton(
-                    "❓ Другое",
-                    callback_data="support_cat_general",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="support",
-                )
-            ],
+            ]
         ]
     )
 
@@ -635,10 +530,12 @@ async def start(
             return
 
         text = (
-            "🏦 *Добро пожаловать в Edaaa Wallet!*\n\n"
-            "🔐 Ваш Telegram подключён к Edaaa.\n\n"
-            "Ваш персональный Ethereum-кошелёк "
-            "уже создан.\n\n"
+            "🏦 *Добро пожаловать "
+            "в Edaaa Wallet!*\n\n"
+            "🔐 Ваш Telegram подключён "
+            "к Edaaa.\n\n"
+            "Ваш персональный Ethereum-"
+            "кошелёк уже создан.\n\n"
             f"🌐 Сеть: `{wallet.network}`\n\n"
             "📍 Ваш адрес:\n"
             f"`{wallet.address}`\n\n"
@@ -660,8 +557,515 @@ async def start(
         await update.message.reply_text(
             "❌ Произошла ошибка при "
             "создании Edaaa Wallet.\n\n"
-            "Попробуйте ещё раз через несколько секунд."
+            "Попробуйте ещё раз."
         )
+
+
+# ============================================================
+# SUPPORT START
+# ============================================================
+
+
+async def support_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    context.user_data.pop(
+        "support_category",
+        None,
+    )
+
+    context.user_data.pop(
+        "support_subject",
+        None,
+    )
+
+    context.user_data.pop(
+        "support_message",
+        None,
+    )
+
+    await query.edit_message_text(
+        "🆘 *Центр поддержки Edaaa*\n\n"
+        "Выберите категорию обращения:",
+        parse_mode="Markdown",
+        reply_markup=support_keyboard(),
+    )
+
+    return SUPPORT_CATEGORY
+
+
+# ============================================================
+# SUPPORT CATEGORY
+# ============================================================
+
+
+async def support_category(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    categories = {
+        "support_cat_deposit": "Пополнение",
+        "support_cat_withdraw": "Вывод",
+        "support_cat_p2p": "P2P",
+        "support_cat_usdt": "USDT",
+        "support_cat_security": "Безопасность",
+        "support_cat_other": "Другое",
+    }
+
+    category = categories.get(
+        query.data
+    )
+
+    if not category:
+
+        await query.edit_message_text(
+            "❌ Неизвестная категория.",
+            reply_markup=back_keyboard(),
+        )
+
+        return ConversationHandler.END
+
+    context.user_data[
+        "support_category"
+    ] = category
+
+    await query.edit_message_text(
+        "🆘 *Новое обращение*\n\n"
+        f"Категория: *{category}*\n\n"
+        "Теперь напишите краткую тему "
+        "обращения.\n\n"
+        "Например:\n"
+        "`Не пришёл депозит`\n"
+        "`Проблема с P2P`\n"
+        "`Не могу вывести ETH`",
+        parse_mode="Markdown",
+        reply_markup=support_cancel_keyboard(),
+    )
+
+    return SUPPORT_SUBJECT
+
+
+# ============================================================
+# SUPPORT SUBJECT
+# ============================================================
+
+
+async def support_subject(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return SUPPORT_SUBJECT
+
+    subject = (
+        update.message.text
+        or ""
+    ).strip()
+
+    if not subject:
+
+        await update.message.reply_text(
+            "❌ Тема не может быть пустой.\n\n"
+            "Напишите тему обращения:",
+            reply_markup=support_cancel_keyboard(),
+        )
+
+        return SUPPORT_SUBJECT
+
+    if len(subject) > 255:
+
+        await update.message.reply_text(
+            "❌ Тема слишком длинная.\n\n"
+            "Максимум — 255 символов.",
+            reply_markup=support_cancel_keyboard(),
+        )
+
+        return SUPPORT_SUBJECT
+
+    context.user_data[
+        "support_subject"
+    ] = subject
+
+    await update.message.reply_text(
+        "📝 *Опишите проблему подробно.*\n\n"
+        "Напишите одним сообщением всё, "
+        "что поможет поддержке разобраться "
+        "в ситуации.\n\n"
+        "Например:\n"
+        "• что произошло;\n"
+        "• сумма;\n"
+        "• адрес кошелька;\n"
+        "• TX Hash;\n"
+        "• номер P2P-сделки.\n\n"
+        "⚠️ Никогда не отправляйте "
+        "private key, seed-фразу или пароль.",
+        parse_mode="Markdown",
+        reply_markup=support_cancel_keyboard(),
+    )
+
+    return SUPPORT_MESSAGE
+
+
+# ============================================================
+# SUPPORT MESSAGE
+# ============================================================
+
+
+async def support_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not update.message:
+        return SUPPORT_MESSAGE
+
+    message_text = (
+        update.message.text
+        or ""
+    ).strip()
+
+    if not message_text:
+
+        await update.message.reply_text(
+            "❌ Сообщение не может быть пустым.",
+            reply_markup=support_cancel_keyboard(),
+        )
+
+        return SUPPORT_MESSAGE
+
+    if len(message_text) > 5000:
+
+        await update.message.reply_text(
+            "❌ Сообщение слишком длинное.\n\n"
+            "Максимум — 5000 символов.",
+            reply_markup=support_cancel_keyboard(),
+        )
+
+        return SUPPORT_MESSAGE
+
+    telegram_user = (
+        update.effective_user
+    )
+
+    if not telegram_user:
+
+        await update.message.reply_text(
+            "❌ Не удалось определить "
+            "Telegram пользователя."
+        )
+
+        return ConversationHandler.END
+
+    try:
+
+        user = get_or_create_user(
+            telegram_id=telegram_user.id,
+            telegram_username=(
+                telegram_user.username
+            ),
+        )
+
+        category = context.user_data.get(
+            "support_category",
+            "Другое",
+        )
+
+        subject = context.user_data.get(
+            "support_subject",
+            "Обращение в поддержку",
+        )
+
+        db = get_db()
+
+        try:
+
+            ticket = SupportTicket(
+                user_id=user.id,
+                category=category,
+                subject=subject,
+                status="open",
+                priority="normal",
+            )
+
+            db.add(ticket)
+
+            db.flush()
+
+            support_message_record = (
+                SupportMessage(
+                    ticket_id=ticket.id,
+                    sender_type="user",
+                    sender_id=user.id,
+                    message=message_text,
+                )
+            )
+
+            db.add(
+                support_message_record
+            )
+
+            db.commit()
+
+            db.refresh(ticket)
+
+            ticket_id = ticket.id
+
+        except Exception:
+
+            db.rollback()
+
+            raise
+
+        finally:
+
+            db.close()
+
+        context.user_data.pop(
+            "support_category",
+            None,
+        )
+
+        context.user_data.pop(
+            "support_subject",
+            None,
+        )
+
+        context.user_data.pop(
+            "support_message",
+            None,
+        )
+
+        await update.message.reply_text(
+            "✅ *Обращение создано!*\n\n"
+            f"🎫 Номер обращения: `#{ticket_id}`\n"
+            f"📂 Категория: *{category}*\n"
+            f"📌 Тема: *{subject}*\n\n"
+            "Ваше сообщение получено.\n"
+            "Сотрудник поддержки сможет "
+            "ответить на него.\n\n"
+            "⚠️ Никому не отправляйте "
+            "private key или seed-фразу.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "📨 Открыть обращение",
+                            callback_data=(
+                                f"support_ticket_{ticket_id}"
+                            ),
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Главное меню",
+                            callback_data="main",
+                        )
+                    ],
+                ]
+            ),
+        )
+
+        return ConversationHandler.END
+
+    except Exception:
+
+        logger.exception(
+            "Failed to create support ticket."
+        )
+
+        await update.message.reply_text(
+            "❌ Не удалось создать обращение.\n\n"
+            "Попробуйте ещё раз через несколько секунд.",
+            reply_markup=back_keyboard(),
+        )
+
+        return ConversationHandler.END
+
+
+# ============================================================
+# SUPPORT CANCEL
+# ============================================================
+
+
+async def support_cancel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    context.user_data.pop(
+        "support_category",
+        None,
+    )
+
+    context.user_data.pop(
+        "support_subject",
+        None,
+    )
+
+    context.user_data.pop(
+        "support_message",
+        None,
+    )
+
+    await query.edit_message_text(
+        "❌ Создание обращения отменено.",
+        reply_markup=back_keyboard(),
+    )
+
+    return ConversationHandler.END
+
+
+# ============================================================
+# SHOW SUPPORT TICKET
+# ============================================================
+
+
+async def show_support_ticket(
+    query,
+    ticket_id: int,
+):
+
+    telegram_user = query.from_user
+
+    user = get_or_create_user(
+        telegram_id=telegram_user.id,
+        telegram_username=(
+            telegram_user.username
+        ),
+    )
+
+    db = get_db()
+
+    try:
+
+        ticket = (
+            db.query(SupportTicket)
+            .filter(
+                SupportTicket.id
+                == ticket_id,
+                SupportTicket.user_id
+                == user.id,
+            )
+            .first()
+        )
+
+        if not ticket:
+
+            await query.edit_message_text(
+                "❌ Обращение не найдено.",
+                reply_markup=back_keyboard(),
+            )
+
+            return
+
+        messages = (
+            db.query(SupportMessage)
+            .filter(
+                SupportMessage.ticket_id
+                == ticket.id
+            )
+            .order_by(
+                SupportMessage.created_at.asc()
+            )
+            .all()
+        )
+
+        lines = [
+            f"🎫 *Обращение #{ticket.id}*",
+            "",
+            f"📂 Категория: *{ticket.category}*",
+            f"📌 Тема: *{ticket.subject}*",
+            f"📊 Статус: *{ticket.status}*",
+            "",
+            "💬 *Переписка:*",
+            "",
+        ]
+
+        for message in messages:
+
+            if (
+                message.sender_type
+                == "user"
+            ):
+
+                sender = "👤 Вы"
+
+            elif (
+                message.sender_type
+                == "admin"
+            ):
+
+                sender = "🛡 Поддержка"
+
+            else:
+
+                sender = "🤖 Edaaa"
+
+            lines.append(
+                f"{sender}:\n"
+                f"{message.message}\n"
+            )
+
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Поддержка",
+                            callback_data="support",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "🏠 Главное меню",
+                            callback_data="main",
+                        )
+                    ],
+                ]
+            ),
+        )
+
+    finally:
+
+        db.close()
+
+
+# ============================================================
+# SHOW SUPPORT
+# ============================================================
+
+
+async def show_support(
+    query,
+):
+
+    await query.edit_message_text(
+        "🆘 *Центр поддержки Edaaa*\n\n"
+        "Здесь вы можете создать обращение "
+        "в службу поддержки.\n\n"
+        "Выберите категорию проблемы:",
+        parse_mode="Markdown",
+        reply_markup=support_keyboard(),
+    )
 
 
 # ============================================================
@@ -701,7 +1105,8 @@ async def button_handler(
         if not wallet:
 
             await query.edit_message_text(
-                "❌ Кошелёк не найден."
+                "❌ Кошелёк не найден.",
+                reply_markup=back_keyboard(),
             )
 
             return
@@ -747,16 +1152,17 @@ async def button_handler(
 
             await query.edit_message_text(
                 "📤 *Отправка ETH*\n\n"
-                "Функция отправки уже реализована "
-                "в Edaaa API.\n\n"
-                "Сейчас мы подключаем её к "
-                "Telegram-интерфейсу.\n\n"
-                "Следующим этапом добавим:\n"
+                "Функция отправки ETH "
+                "доступна через Edaaa API.\n\n"
+                "Telegram-интерфейс отправки "
+                "будем расширять следующим этапом.\n\n"
+                "План:\n"
                 "1️⃣ Адрес получателя\n"
-                "2️⃣ Сумму\n"
-                "3️⃣ Подтверждение\n"
-                "4️⃣ Отправку транзакции\n"
-                "5️⃣ TX Hash",
+                "2️⃣ Сумма\n"
+                "3️⃣ Проверка комиссии\n"
+                "4️⃣ Подтверждение\n"
+                "5️⃣ Отправка\n"
+                "6️⃣ TX Hash",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard(),
             )
@@ -773,35 +1179,81 @@ async def button_handler(
             )
 
         # ====================================================
-        # BUY USDT
+        # BUY
         # ====================================================
 
         elif query.data == "buy_usdt":
 
             await query.edit_message_text(
                 "💱 *Купить USDT*\n\n"
-                "P2P-модуль пока находится "
+                "P2P-модуль находится "
                 "в разработке.\n\n"
-                "Следующим этапом подключим "
-                "полноценные P2P-сделки.",
+                "Следующим этапом добавим "
+                "заявки, оплату и защиту сделки.",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard(),
             )
 
         # ====================================================
-        # SELL USDT
+        # SELL
         # ====================================================
 
         elif query.data == "sell_usdt":
 
             await query.edit_message_text(
                 "💵 *Продать USDT*\n\n"
-                "P2P-модуль пока находится "
+                "P2P-модуль находится "
                 "в разработке.\n\n"
-                "Следующим этапом подключим "
-                "полноценные P2P-сделки.",
+                "Следующим этапом добавим "
+                "заявки, оплату и защиту сделки.",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard(),
+            )
+
+        # ====================================================
+        # SUPPORT
+        # ====================================================
+
+        elif query.data == "support":
+
+            await show_support(
+                query
+            )
+
+        # ====================================================
+        # SUPPORT TICKET
+        # ====================================================
+
+        elif query.data.startswith(
+            "support_ticket_"
+        ):
+
+            ticket_id_string = (
+                query.data.replace(
+                    "support_ticket_",
+                    "",
+                    1,
+                )
+            )
+
+            try:
+
+                ticket_id = int(
+                    ticket_id_string
+                )
+
+            except ValueError:
+
+                await query.edit_message_text(
+                    "❌ Некорректный номер обращения.",
+                    reply_markup=back_keyboard(),
+                )
+
+                return
+
+            await show_support_ticket(
+                query,
+                ticket_id,
             )
 
         # ====================================================
@@ -816,279 +1268,23 @@ async def button_handler(
                 wallet,
             )
 
-        # ====================================================
-        # SUPPORT
-        # ====================================================
-
-        elif query.data == "support":
-
-            await show_support(
-                query
-            )
-
-        # ====================================================
-        # SUPPORT NEW
-        # ====================================================
-
-        elif query.data == "support_new":
-
-            await show_support_categories(
-                query
-            )
-
-        # ====================================================
-        # SUPPORT CATEGORY
-        # ====================================================
-
-        elif query.data.startswith(
-            "support_cat_"
-        ):
-
-            category = (
-                query.data.replace(
-                    "support_cat_",
-                    "",
-                )
-            )
-
-            context.user_data[
-                "support_category"
-            ] = category
-
-            await query.edit_message_text(
-                "📝 *Новое обращение*\n\n"
-                f"Категория: `{category}`\n\n"
-                "Теперь отправьте следующим "
-                "сообщением тему обращения.\n\n"
-                "Например:\n"
-                "`Не пришёл депозит`",
-                parse_mode="Markdown",
-                reply_markup=back_keyboard(),
-            )
-
-            context.user_data[
-                "support_waiting_subject"
-            ] = True
-
-        # ====================================================
-        # MY SUPPORT
-        # ====================================================
-
-        elif query.data == "support_my":
-
-            await show_my_support(
-                query,
-                user,
-            )
-
-        # ====================================================
-        # OPEN TICKET
-        # ====================================================
-
-        elif query.data.startswith(
-            "support_ticket_"
-        ):
-
-            ticket_id = int(
-                query.data.replace(
-                    "support_ticket_",
-                    "",
-                )
-            )
-
-            await show_support_ticket(
-                query,
-                user,
-                ticket_id,
-            )
-
     except Exception:
 
         logger.exception(
             "Telegram callback error."
         )
 
-        await query.edit_message_text(
-            "❌ Произошла ошибка.\n\n"
-            "Попробуйте ещё раз.",
-            reply_markup=back_keyboard(),
-        )
+        try:
 
-
-# ============================================================
-# SUPPORT SCREEN
-# ============================================================
-
-
-async def show_support(
-    query,
-):
-
-    text = (
-        "👨‍💻 *Поддержка Edaaa*\n\n"
-        "Здесь вы можете обратиться "
-        "в службу поддержки.\n\n"
-        "Мы рекомендуем указывать:\n"
-        "• номер сделки;\n"
-        "• TX Hash;\n"
-        "• адрес кошелька;\n"
-        "• подробное описание проблемы.\n\n"
-        "Выберите действие:"
-    )
-
-    await query.edit_message_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=support_keyboard(),
-    )
-
-
-async def show_support_categories(
-    query,
-):
-
-    text = (
-        "📝 *Создание обращения*\n\n"
-        "Выберите категорию:"
-    )
-
-    await query.edit_message_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=support_categories_keyboard(),
-    )
-
-
-async def show_my_support(
-    query,
-    user,
-):
-
-    tickets = get_user_support_tickets(
-        user.id
-    )
-
-    if not tickets:
-
-        await query.edit_message_text(
-            "📂 *Мои обращения*\n\n"
-            "У вас пока нет обращений.",
-            parse_mode="Markdown",
-            reply_markup=support_keyboard(),
-        )
-
-        return
-
-    buttons = []
-
-    for ticket in tickets:
-
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    f"#{ticket.id} — {ticket.subject[:30]}",
-                    callback_data=(
-                        f"support_ticket_{ticket.id}"
-                    ),
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад",
-                callback_data="support",
-            )
-        ]
-    )
-
-    await query.edit_message_text(
-        "📂 *Мои обращения*\n\n"
-        "Выберите обращение:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
-
-
-async def show_support_ticket(
-    query,
-    user,
-    ticket_id: int,
-):
-
-    ticket = get_support_ticket(
-        user.id,
-        ticket_id,
-    )
-
-    if not ticket:
-
-        await query.edit_message_text(
-            "❌ Обращение не найдено.",
-            reply_markup=support_keyboard(),
-        )
-
-        return
-
-    db = get_db()
-
-    try:
-
-        messages = (
-            db.query(SupportMessage)
-            .filter(
-                SupportMessage.ticket_id
-                == ticket.id
-            )
-            .order_by(
-                SupportMessage.created_at.asc()
-            )
-            .all()
-        )
-
-        lines = [
-            f"🎫 *Обращение #{ticket.id}*",
-            "",
-            f"Тема: *{ticket.subject}*",
-            f"Категория: `{ticket.category}`",
-            f"Статус: `{ticket.status}`",
-            "",
-        ]
-
-        for message in messages:
-
-            sender = (
-                "👤 Вы"
-                if message.sender_type == "user"
-                else "👨‍💻 Поддержка"
+            await query.edit_message_text(
+                "❌ Произошла ошибка.\n\n"
+                "Попробуйте ещё раз.",
+                reply_markup=back_keyboard(),
             )
 
-            lines.append(
-                f"{sender}:"
-            )
+        except Exception:
 
-            lines.append(
-                message.message
-            )
-
-            lines.append("")
-
-        text = "\n".join(
-            lines
-        )
-
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=support_keyboard(),
-        )
-
-    finally:
-
-        db.close()
+            pass
 
 
 # ============================================================
@@ -1164,8 +1360,9 @@ async def show_deposit(
         f"🌐 Сеть: `{wallet.network}`\n\n"
         "⚠️ Обязательно проверяйте сеть "
         "перед отправкой.\n\n"
-        "После подтверждения транзакции "
-        "баланс будет отображён в Edaaa."
+        "После необходимого количества "
+        "подтверждений транзакция будет "
+        "зачислена в Edaaa."
     )
 
     await query.edit_message_text(
@@ -1205,11 +1402,15 @@ async def show_history(
 
         for transaction in transactions:
 
+            tx_type = transaction.type
+            amount = transaction.amount
+            asset = transaction.asset
+            tx_status = transaction.status
+
             lines.append(
-                f"• {transaction.type} — "
-                f"{transaction.amount} "
-                f"{transaction.asset} — "
-                f"{transaction.status}"
+                f"• {tx_type} — "
+                f"{amount} {asset} — "
+                f"{tx_status}"
             )
 
         text = "\n".join(
@@ -1263,133 +1464,6 @@ async def show_profile(
 
 
 # ============================================================
-# TEXT MESSAGE HANDLER
-# ============================================================
-
-
-async def text_message_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not update.effective_user:
-        return
-
-    if not update.message:
-        return
-
-    if not update.message.text:
-        return
-
-    user = get_or_create_user(
-        telegram_id=(
-            update.effective_user.id
-        ),
-        telegram_username=(
-            update.effective_user.username
-        ),
-    )
-
-    text = update.message.text.strip()
-
-    # ========================================================
-    # SUBJECT
-    # ========================================================
-
-    if context.user_data.get(
-        "support_waiting_subject"
-    ):
-
-        context.user_data[
-            "support_subject"
-        ] = text
-
-        context.user_data[
-            "support_waiting_subject"
-        ] = False
-
-        context.user_data[
-            "support_waiting_message"
-        ] = True
-
-        await update.message.reply_text(
-            "✍️ Теперь опишите проблему "
-            "подробно.\n\n"
-            "Можно указать номер сделки, "
-            "TX Hash и другие детали."
-        )
-
-        return
-
-    # ========================================================
-    # MESSAGE
-    # ========================================================
-
-    if context.user_data.get(
-        "support_waiting_message"
-    ):
-
-        category = context.user_data.get(
-            "support_category",
-            "general",
-        )
-
-        subject = context.user_data.get(
-            "support_subject",
-            "Обращение пользователя",
-        )
-
-        try:
-
-            ticket = create_support_ticket(
-                user_id=user.id,
-                category=category,
-                subject=subject,
-                message=text,
-            )
-
-            context.user_data.pop(
-                "support_category",
-                None,
-            )
-
-            context.user_data.pop(
-                "support_subject",
-                None,
-            )
-
-            context.user_data.pop(
-                "support_waiting_message",
-                None,
-            )
-
-            await update.message.reply_text(
-                "✅ *Обращение создано!*\n\n"
-                f"🎫 Номер: `#{ticket.id}`\n"
-                f"📌 Тема: `{ticket.subject}`\n"
-                f"📂 Категория: `{ticket.category}`\n"
-                f"📊 Статус: `{ticket.status}`\n\n"
-                "Поддержка рассмотрит ваше "
-                "обращение.",
-                parse_mode="Markdown",
-                reply_markup=support_keyboard(),
-            )
-
-        except Exception:
-
-            logger.exception(
-                "Failed to create support ticket."
-            )
-
-            await update.message.reply_text(
-                "❌ Не удалось создать обращение.\n\n"
-                "Попробуйте ещё раз."
-            )
-
-        return
-
-
-# ============================================================
 # ERROR HANDLER
 # ============================================================
 
@@ -1429,6 +1503,10 @@ def create_telegram_application():
         .build()
     )
 
+    # ========================================================
+    # /START
+    # ========================================================
+
     application.add_handler(
         CommandHandler(
             "start",
@@ -1436,38 +1514,89 @@ def create_telegram_application():
         )
     )
 
+    # ========================================================
+    # SUPPORT CONVERSATION
+    # ========================================================
+
+    support_conversation = (
+        ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(
+                    support_start,
+                    pattern="^support$",
+                )
+            ],
+            states={
+                SUPPORT_CATEGORY: [
+                    CallbackQueryHandler(
+                        support_category,
+                        pattern=(
+                            "^support_cat_"
+                        ),
+                    ),
+                    CallbackQueryHandler(
+                        support_cancel,
+                        pattern=(
+                            "^support_cancel$"
+                        ),
+                    ),
+                ],
+                SUPPORT_SUBJECT: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        support_subject,
+                    ),
+                    CallbackQueryHandler(
+                        support_cancel,
+                        pattern=(
+                            "^support_cancel$"
+                        ),
+                    ),
+                ],
+                SUPPORT_MESSAGE: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        support_message,
+                    ),
+                    CallbackQueryHandler(
+                        support_cancel,
+                        pattern=(
+                            "^support_cancel$"
+                        ),
+                    ),
+                ],
+            },
+            fallbacks=[
+                CallbackQueryHandler(
+                    support_cancel,
+                    pattern=(
+                        "^support_cancel$"
+                    ),
+                )
+            ],
+            allow_reentry=True,
+        )
+    )
+
+    application.add_handler(
+        support_conversation
+    )
+
+    # ========================================================
+    # NORMAL CALLBACKS
+    # ========================================================
+
     application.add_handler(
         CallbackQueryHandler(
             button_handler
         )
     )
 
-    application.add_handler(
-        # Обрабатываем обычные текстовые сообщения.
-        # В дальнейшем здесь же сделаем
-        # сообщения P2P и апелляций.
-        __import__(
-            "telegram.ext",
-            fromlist=[
-                "MessageHandler",
-                "filters",
-            ],
-        ).MessageHandler(
-            __import__(
-                "telegram.ext",
-                fromlist=[
-                    "filters",
-                ],
-            ).filters.TEXT
-            & ~__import__(
-                "telegram.ext",
-                fromlist=[
-                    "filters",
-                ],
-            ).filters.COMMAND,
-            text_message_handler,
-        )
-    )
+    # ========================================================
+    # ERRORS
+    # ========================================================
 
     application.add_error_handler(
         error_handler
