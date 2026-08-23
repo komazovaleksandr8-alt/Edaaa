@@ -105,7 +105,7 @@ logger = logging.getLogger(
 app = FastAPI(
     title="Edaaa Wallet",
     description="Edaaa Cryptocurrency Wallet API",
-    version="1.0.0",
+    version=settings.APP_VERSION,
 )
 
 
@@ -142,9 +142,11 @@ class AdminDepositRequest(BaseModel):
 
 blockchain_scanner_task = None
 
+telegram_bot_task = None
+
 telegram_application = None
 
-telegram_bot_task = None
+shutdown_event = None
 
 
 # ============================================================
@@ -549,10 +551,36 @@ async def startup():
 
     global blockchain_scanner_task
     global telegram_bot_task
+    global shutdown_event
+
+    logger.info(
+        "=================================================="
+    )
 
     logger.info(
         "Edaaa Wallet API startup started."
     )
+
+    logger.info(
+        "Application: %s",
+        settings.APP_NAME,
+    )
+
+    logger.info(
+        "Version: %s",
+        settings.APP_VERSION,
+    )
+
+    logger.info(
+        "Network: %s",
+        settings.ETH_NETWORK,
+    )
+
+    logger.info(
+        "=================================================="
+    )
+
+    shutdown_event = asyncio.Event()
 
     # --------------------------------------------------------
     # DATABASE
@@ -582,15 +610,17 @@ async def startup():
     # BLOCKCHAIN SCANNER
     # --------------------------------------------------------
 
-    blockchain_scanner_task = (
-        asyncio.create_task(
-            blockchain_scanner_loop()
-        )
-    )
+    if blockchain_scanner_task is None:
 
-    logger.info(
-        "Blockchain scanner task created."
-    )
+        blockchain_scanner_task = (
+            asyncio.create_task(
+                blockchain_scanner_loop()
+            )
+        )
+
+        logger.info(
+            "Blockchain scanner task created."
+        )
 
     # --------------------------------------------------------
     # TELEGRAM BOT
@@ -598,15 +628,17 @@ async def startup():
 
     if settings.TELEGRAM_BOT_TOKEN:
 
-        telegram_bot_task = (
-            asyncio.create_task(
-                telegram_bot_loop()
-            )
-        )
+        if telegram_bot_task is None:
 
-        logger.info(
-            "Telegram supervisor task created."
-        )
+            telegram_bot_task = (
+                asyncio.create_task(
+                    telegram_bot_loop()
+                )
+            )
+
+            logger.info(
+                "Telegram supervisor task created."
+            )
 
     else:
 
@@ -630,10 +662,16 @@ async def shutdown():
 
     global blockchain_scanner_task
     global telegram_bot_task
+    global telegram_application
+    global shutdown_event
 
     logger.info(
         "Edaaa Wallet API shutdown started."
     )
+
+    if shutdown_event:
+
+        shutdown_event.set()
 
     # --------------------------------------------------------
     # BLOCKCHAIN SCANNER
@@ -650,6 +688,12 @@ async def shutdown():
         except asyncio.CancelledError:
 
             pass
+
+        except Exception:
+
+            logger.exception(
+                "Error while stopping blockchain scanner."
+            )
 
         blockchain_scanner_task = None
 
@@ -669,7 +713,17 @@ async def shutdown():
 
             pass
 
+        except Exception:
+
+            logger.exception(
+                "Error while stopping Telegram supervisor."
+            )
+
         telegram_bot_task = None
+
+    telegram_application = None
+
+    shutdown_event = None
 
     logger.info(
         "Edaaa Wallet API shutdown completed."
@@ -688,7 +742,8 @@ def root():
         "message": (
             "Edaaa Wallet API is running"
         ),
-        "version": "1.0.0",
+        "version": settings.APP_VERSION,
+        "network": settings.ETH_NETWORK,
         "telegram": bool(
             settings.TELEGRAM_BOT_TOKEN
         ),
@@ -713,6 +768,7 @@ def health():
     return {
         "status": "healthy",
         "database": "initialized",
+        "network": settings.ETH_NETWORK,
         "telegram": bool(
             settings.TELEGRAM_BOT_TOKEN
         ),
@@ -1576,6 +1632,7 @@ def admin_deposit(
     )
 
     db.commit()
+
     db.refresh(
         transaction
     )
