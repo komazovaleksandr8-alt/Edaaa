@@ -67,6 +67,10 @@ from app.blockchain_scanner import (
     scan_once,
 )
 
+from app.send_scanner import (
+    scan_pending_send_transactions,
+)
+
 from app.send_schemas import (
     SendETHRequest,
     SendETHResponse,
@@ -105,7 +109,7 @@ logger = logging.getLogger(
 app = FastAPI(
     title="Edaaa Wallet",
     description="Edaaa Cryptocurrency Wallet API",
-    version="1.0.0",
+    version=settings.APP_VERSION,
 )
 
 
@@ -142,6 +146,8 @@ class AdminDepositRequest(BaseModel):
 
 blockchain_scanner_task = None
 
+send_scanner_task = None
+
 telegram_application = None
 
 telegram_bot_task = None
@@ -153,16 +159,16 @@ telegram_bot_task = None
 
 def get_wallet_fernet() -> Fernet:
 
-    key = settings.WALLET_ENCRYPTION_KEY
+    key = (
+        settings.WALLET_ENCRYPTION_KEY
+        or ""
+    ).strip()
 
     if not key:
 
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "WALLET_ENCRYPTION_KEY "
-                "is not configured."
-            ),
+        raise RuntimeError(
+            "WALLET_ENCRYPTION_KEY "
+            "is not configured."
         )
 
     try:
@@ -173,11 +179,8 @@ def get_wallet_fernet() -> Fernet:
 
     except Exception as exc:
 
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Invalid WALLET_ENCRYPTION_KEY."
-            ),
+        raise RuntimeError(
+            "Invalid WALLET_ENCRYPTION_KEY."
         ) from exc
 
 
@@ -226,12 +229,9 @@ def decrypt_private_key(
 
     except InvalidToken as exc:
 
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Failed to decrypt "
-                "wallet private key."
-            ),
+        raise RuntimeError(
+            "Failed to decrypt "
+            "wallet private key."
         ) from exc
 
 
@@ -264,16 +264,15 @@ def validate_database_configuration():
             "Render PostgreSQL database."
         )
 
-    if not (
-        database_url.startswith(
-            "postgresql://"
-        )
-        or database_url.startswith(
-            "postgresql+psycopg2://"
-        )
-        or database_url.startswith(
-            "postgresql+asyncpg://"
-        )
+    supported_prefixes = (
+        "postgresql://",
+        "postgresql+psycopg2://",
+        "postgresql+psycopg://",
+        "postgresql+asyncpg://",
+    )
+
+    if not database_url.startswith(
+        supported_prefixes
     ):
 
         raise RuntimeError(
@@ -282,7 +281,8 @@ def validate_database_configuration():
         )
 
     logger.info(
-        "Persistent PostgreSQL database configuration detected."
+        "Persistent PostgreSQL database "
+        "configuration detected."
     )
 
 
@@ -421,6 +421,48 @@ async def blockchain_scanner_loop():
 
 
 # ============================================================
+# SEND TRANSACTION SCANNER LOOP
+# ============================================================
+
+async def send_scanner_loop():
+
+    logger.info(
+        "Edaaa ETH send scanner started."
+    )
+
+    while True:
+
+        try:
+
+            result = await asyncio.to_thread(
+                scan_pending_send_transactions
+            )
+
+            logger.info(
+                "ETH send scanner result: %s",
+                result,
+            )
+
+        except asyncio.CancelledError:
+
+            logger.info(
+                "ETH send scanner task cancelled."
+            )
+
+            raise
+
+        except Exception:
+
+            logger.exception(
+                "ETH send scanner loop error."
+            )
+
+        await asyncio.sleep(
+            20
+        )
+
+
+# ============================================================
 # TELEGRAM SUPERVISOR
 # ============================================================
 
@@ -521,8 +563,7 @@ async def telegram_bot_loop():
                 try:
 
                     await (
-                        telegram_application
-                        .shutdown()
+                        telegram_application.shutdown()
                     )
 
                 except Exception:
@@ -548,6 +589,7 @@ async def telegram_bot_loop():
 async def startup():
 
     global blockchain_scanner_task
+    global send_scanner_task
     global telegram_bot_task
 
     logger.info(
@@ -576,9 +618,6 @@ async def startup():
             "CRITICAL: Database initialization failed."
         )
 
-        # Очень важно:
-        # приложение НЕ должно продолжать работу,
-        # если постоянная БД недоступна.
         raise
 
     # --------------------------------------------------------
@@ -593,6 +632,20 @@ async def startup():
 
     logger.info(
         "Blockchain scanner task created."
+    )
+
+    # --------------------------------------------------------
+    # ETH SEND SCANNER
+    # --------------------------------------------------------
+
+    send_scanner_task = (
+        asyncio.create_task(
+            send_scanner_loop()
+        )
+    )
+
+    logger.info(
+        "ETH send scanner task created."
     )
 
     # --------------------------------------------------------
@@ -632,6 +685,7 @@ async def startup():
 async def shutdown():
 
     global blockchain_scanner_task
+    global send_scanner_task
     global telegram_bot_task
 
     logger.info(
@@ -655,6 +709,24 @@ async def shutdown():
             pass
 
         blockchain_scanner_task = None
+
+    # --------------------------------------------------------
+    # ETH SEND SCANNER
+    # --------------------------------------------------------
+
+    if send_scanner_task:
+
+        send_scanner_task.cancel()
+
+        try:
+
+            await send_scanner_task
+
+        except asyncio.CancelledError:
+
+            pass
+
+        send_scanner_task = None
 
     # --------------------------------------------------------
     # TELEGRAM
@@ -691,7 +763,9 @@ def root():
         "message": (
             "Edaaa Wallet API is running"
         ),
-        "version": "1.0.0",
+        "version": settings.APP_VERSION,
+        "network": settings.ETH_NETWORK,
+        "database": "postgresql",
         "telegram": bool(
             settings.TELEGRAM_BOT_TOKEN
         ),
@@ -716,6 +790,8 @@ def health():
     return {
         "status": "healthy",
         "database": "initialized",
+        "database_type": "postgresql",
+        "network": settings.ETH_NETWORK,
         "telegram": bool(
             settings.TELEGRAM_BOT_TOKEN
         ),
@@ -1250,9 +1326,7 @@ def ethereum_balance(
 
         return {
             "address": address,
-            "network": (
-                settings.ETH_NETWORK
-            ),
+            "network": settings.ETH_NETWORK,
             "asset": "ETH",
             "balance": str(
                 Web3.from_wei(
@@ -1401,6 +1475,7 @@ def send_eth(
     )
 
     db.commit()
+
     db.refresh(
         transaction_record
     )
@@ -1499,14 +1574,12 @@ def admin_deposit(
     ),
     db: Session = Depends(
         get_db
-    ),
-):
+    ):
 
     user = (
         db.query(User)
         .filter(
-            User.id
-            == data.user_id
+            User.id == data.user_id
         )
         .first()
     )
@@ -1521,8 +1594,7 @@ def admin_deposit(
     wallet = (
         db.query(Wallet)
         .filter(
-            Wallet.user_id
-            == user.id
+            Wallet.user_id == user.id
         )
         .order_by(
             Wallet.id.asc()
@@ -1540,8 +1612,7 @@ def admin_deposit(
     balance = (
         db.query(Balance)
         .filter(
-            Balance.wallet_id
-            == wallet.id,
+            Balance.wallet_id == wallet.id,
             Balance.asset == "USDT",
         )
         .first()
@@ -1555,21 +1626,15 @@ def admin_deposit(
         )
 
     balance.amount = (
-        Decimal(
-            balance.amount
-        )
-        + Decimal(
-            data.amount
-        )
+        Decimal(balance.amount)
+        + Decimal(data.amount)
     )
 
     transaction = Transaction(
         wallet_id=wallet.id,
         type="deposit",
         asset="USDT",
-        amount=Decimal(
-            data.amount
-        ),
+        amount=Decimal(data.amount),
         status="completed",
         tx_hash=None,
     )
@@ -1578,9 +1643,21 @@ def admin_deposit(
         transaction
     )
 
-    db.commit()
-    db.refresh(
-        transaction
-    )
+    try:
+
+        db.commit()
+
+        db.refresh(
+            transaction
+        )
+
+    except Exception:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create deposit.",
+        )
 
     return transaction
