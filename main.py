@@ -2,13 +2,30 @@ import asyncio
 import logging
 from decimal import Decimal
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import (
+    Fernet,
+    InvalidToken,
+)
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+)
 
-from pydantic import BaseModel, Field
+from fastapi.middleware.cors import (
+    CORSMiddleware,
+)
+
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+)
+
+from pydantic import (
+    BaseModel,
+    Field,
+)
 
 from sqlalchemy.orm import Session
 
@@ -42,9 +59,13 @@ from app.balance_models import Balance
 from app.transaction_models import Transaction
 from app.wallet_key_models import WalletKey
 
-from app.blockchain_state_models import BlockchainState
+from app.blockchain_state_models import (
+    BlockchainState,
+)
 
-from app.blockchain_scanner import scan_once
+from app.blockchain_scanner import (
+    scan_once,
+)
 
 from app.send_schemas import (
     SendETHRequest,
@@ -59,7 +80,9 @@ from app.send_service import (
     sign_and_send_eth_transaction,
 )
 
-from app.telegram_bot import create_telegram_application
+from app.telegram_bot import (
+    create_telegram_application,
+)
 
 
 # ============================================================
@@ -103,6 +126,7 @@ security = HTTPBearer()
 # ============================================================
 
 class AdminDepositRequest(BaseModel):
+
     user_id: int = Field(
         gt=0
     )
@@ -128,9 +152,11 @@ telegram_bot_task = None
 # ============================================================
 
 def get_wallet_fernet() -> Fernet:
+
     key = settings.WALLET_ENCRYPTION_KEY
 
     if not key:
+
         raise HTTPException(
             status_code=503,
             detail=(
@@ -140,22 +166,29 @@ def get_wallet_fernet() -> Fernet:
         )
 
     try:
+
         return Fernet(
             key.encode()
         )
 
     except Exception as exc:
+
         raise HTTPException(
             status_code=500,
-            detail="Invalid WALLET_ENCRYPTION_KEY.",
+            detail=(
+                "Invalid WALLET_ENCRYPTION_KEY."
+            ),
         ) from exc
 
 
 def create_real_ethereum_wallet():
+
     account = Account.create()
 
-    address = Web3.to_checksum_address(
-        account.address
+    address = (
+        Web3.to_checksum_address(
+            account.address
+        )
     )
 
     return (
@@ -182,6 +215,7 @@ def decrypt_private_key(
 ) -> str:
 
     try:
+
         return (
             get_wallet_fernet()
             .decrypt(
@@ -191,6 +225,7 @@ def decrypt_private_key(
         )
 
     except InvalidToken as exc:
+
         raise HTTPException(
             status_code=500,
             detail=(
@@ -212,6 +247,7 @@ def validate_database_configuration():
     ).strip()
 
     if not database_url:
+
         raise RuntimeError(
             "DATABASE_URL is not configured. "
             "Edaaa requires a persistent PostgreSQL "
@@ -221,6 +257,7 @@ def validate_database_configuration():
     if database_url.startswith(
         "sqlite:///"
     ):
+
         raise RuntimeError(
             "SQLite is not allowed in production. "
             "Configure DATABASE_URL with the "
@@ -238,6 +275,7 @@ def validate_database_configuration():
             "postgresql+asyncpg://"
         )
     ):
+
         raise RuntimeError(
             "Unsupported DATABASE_URL. "
             "Edaaa production requires PostgreSQL."
@@ -262,6 +300,7 @@ def get_current_user(
 ):
 
     try:
+
         payload = decode_access_token(
             credentials.credentials
         )
@@ -271,6 +310,7 @@ def get_current_user(
         )
 
         if not user_id:
+
             raise ValueError()
 
         user_id = int(
@@ -281,9 +321,12 @@ def get_current_user(
         ValueError,
         TypeError,
     ):
+
         raise HTTPException(
             status_code=401,
-            detail="Invalid or expired token.",
+            detail=(
+                "Invalid or expired token."
+            ),
             headers={
                 "WWW-Authenticate": "Bearer"
             },
@@ -298,6 +341,7 @@ def get_current_user(
     )
 
     if not user:
+
         raise HTTPException(
             status_code=401,
             detail="User not found.",
@@ -307,9 +351,12 @@ def get_current_user(
         )
 
     if not user.is_active:
+
         raise HTTPException(
             status_code=403,
-            detail="User account is inactive.",
+            detail=(
+                "User account is inactive."
+            ),
         )
 
     return user
@@ -322,6 +369,7 @@ def get_current_admin(
 ):
 
     if not current_user.is_admin:
+
         raise HTTPException(
             status_code=403,
             detail="Admin access required.",
@@ -402,6 +450,7 @@ async def telegram_bot_loop():
                 telegram_application.updater
                 is None
             ):
+
                 raise RuntimeError(
                     "Telegram updater is not available."
                 )
@@ -419,11 +468,13 @@ async def telegram_bot_loop():
             )
 
             while True:
+
                 await asyncio.sleep(
                     3600
                 )
 
         except asyncio.CancelledError:
+
             raise
 
         except Exception:
@@ -597,6 +648,7 @@ async def shutdown():
             await blockchain_scanner_task
 
         except asyncio.CancelledError:
+
             pass
 
         blockchain_scanner_task = None
@@ -614,6 +666,7 @@ async def shutdown():
             await telegram_bot_task
 
         except asyncio.CancelledError:
+
             pass
 
         telegram_bot_task = None
@@ -632,7 +685,9 @@ def root():
 
     return {
         "status": "ok",
-        "message": "Edaaa Wallet API is running",
+        "message": (
+            "Edaaa Wallet API is running"
+        ),
         "version": "1.0.0",
         "telegram": bool(
             settings.TELEGRAM_BOT_TOKEN
@@ -642,6 +697,7 @@ def root():
 
 @app.head("/")
 def root_head():
+
     return None
 
 
@@ -676,7 +732,9 @@ def blockchain_status():
 
         raise HTTPException(
             status_code=503,
-            detail="ETH_RPC_URL is not configured.",
+            detail=(
+                "ETH_RPC_URL is not configured."
+            ),
         )
 
     web3 = Web3(
@@ -702,11 +760,16 @@ def blockchain_status():
         return {
             "connected": True,
             "network": settings.ETH_NETWORK,
-            "chain_id": web3.eth.chain_id,
-            "latest_block": web3.eth.block_number,
+            "chain_id": (
+                web3.eth.chain_id
+            ),
+            "latest_block": (
+                web3.eth.block_number
+            ),
         }
 
     except HTTPException:
+
         raise
 
     except Exception as exc:
@@ -1170,8 +1233,10 @@ def ethereum_balance(
 
     try:
 
-        address = Web3.to_checksum_address(
-            wallet.address
+        address = (
+            Web3.to_checksum_address(
+                wallet.address
+            )
         )
 
         balance_wei = (
@@ -1182,7 +1247,9 @@ def ethereum_balance(
 
         return {
             "address": address,
-            "network": settings.ETH_NETWORK,
+            "network": (
+                settings.ETH_NETWORK
+            ),
             "asset": "ETH",
             "balance": str(
                 Web3.from_wei(
@@ -1296,8 +1363,10 @@ def send_eth(
             detail="Wallet not found.",
         )
 
-    to_address = validate_recipient_address(
-        data.to_address
+    to_address = (
+        validate_recipient_address(
+            data.to_address
+        )
     )
 
     if (
@@ -1329,7 +1398,6 @@ def send_eth(
     )
 
     db.commit()
-
     db.refresh(
         transaction_record
     )
@@ -1340,31 +1408,41 @@ def send_eth(
 
         web3 = get_web3()
 
-        private_key = get_wallet_private_key(
-            wallet=wallet,
-            db=db,
-            decrypt_private_key=(
-                decrypt_private_key
-            ),
+        private_key = (
+            get_wallet_private_key(
+                wallet=wallet,
+                db=db,
+                decrypt_private_key=(
+                    decrypt_private_key
+                ),
+            )
         )
 
-        transaction_data = create_eth_transaction(
-            web3=web3,
-            wallet=wallet,
-            private_key=private_key,
-            to_address=to_address,
-            amount=data.amount,
+        transaction_data = (
+            create_eth_transaction(
+                web3=web3,
+                wallet=wallet,
+                private_key=private_key,
+                to_address=to_address,
+                amount=data.amount,
+            )
         )
 
-        tx_hash = sign_and_send_eth_transaction(
-            web3=web3,
-            private_key=private_key,
-            transaction=transaction_data,
+        tx_hash = (
+            sign_and_send_eth_transaction(
+                web3=web3,
+                private_key=private_key,
+                transaction=transaction_data,
+            )
         )
 
-        transaction_record.tx_hash = tx_hash
+        transaction_record.tx_hash = (
+            tx_hash
+        )
 
-        transaction_record.status = "pending"
+        transaction_record.status = (
+            "pending"
+        )
 
         db.commit()
 
@@ -1374,7 +1452,9 @@ def send_eth(
 
     except Exception:
 
-        transaction_record.status = "failed"
+        transaction_record.status = (
+            "failed"
+        )
 
         db.commit()
 
@@ -1392,8 +1472,12 @@ def send_eth(
         "amount": str(
             transaction_record.amount
         ),
-        "tx_hash": transaction_record.tx_hash,
-        "status": transaction_record.status,
+        "tx_hash": (
+            transaction_record.tx_hash
+        ),
+        "status": (
+            transaction_record.status
+        ),
     }
 
 
@@ -1418,7 +1502,8 @@ def admin_deposit(
     user = (
         db.query(User)
         .filter(
-            User.id == data.user_id
+            User.id
+            == data.user_id
         )
         .first()
     )
@@ -1433,7 +1518,8 @@ def admin_deposit(
     wallet = (
         db.query(Wallet)
         .filter(
-            Wallet.user_id == user.id
+            Wallet.user_id
+            == user.id
         )
         .order_by(
             Wallet.id.asc()
@@ -1451,7 +1537,8 @@ def admin_deposit(
     balance = (
         db.query(Balance)
         .filter(
-            Balance.wallet_id == wallet.id,
+            Balance.wallet_id
+            == wallet.id,
             Balance.asset == "USDT",
         )
         .first()
@@ -1465,15 +1552,21 @@ def admin_deposit(
         )
 
     balance.amount = (
-        Decimal(balance.amount)
-        + Decimal(data.amount)
+        Decimal(
+            balance.amount
+        )
+        + Decimal(
+            data.amount
+        )
     )
 
     transaction = Transaction(
         wallet_id=wallet.id,
         type="deposit",
         asset="USDT",
-        amount=Decimal(data.amount),
+        amount=Decimal(
+            data.amount
+        ),
         status="completed",
         tx_hash=None,
     )
@@ -1483,7 +1576,6 @@ def admin_deposit(
     )
 
     db.commit()
-
     db.refresh(
         transaction
     )
