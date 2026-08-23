@@ -1,6 +1,13 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Integer,
+    String,
+)
+
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -57,8 +64,22 @@ class User(Base):
         nullable=False,
     )
 
+    # ========================================================
+    # WALLET
+    # ========================================================
+
     wallets = relationship(
         "Wallet",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    # ========================================================
+    # SUPPORT
+    # ========================================================
+
+    support_tickets = relationship(
+        "SupportTicket",
         back_populates="user",
         cascade="all, delete-orphan",
     )
