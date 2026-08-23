@@ -13,6 +13,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
+
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -28,7 +29,6 @@ from sqlalchemy.orm import Session
 from app.auth import hash_password
 from app.config import settings
 from app.database import SessionLocal
-
 from app.models import User
 
 from app.wallet_models import Wallet
@@ -56,17 +56,12 @@ logger = logging.getLogger(
 
 
 # ============================================================
-# SUPPORT STATES
+# STATES
 # ============================================================
 
 SUPPORT_CATEGORY = 1
 SUPPORT_SUBJECT = 2
 SUPPORT_MESSAGE = 3
-
-
-# ============================================================
-# SEND ETH STATES
-# ============================================================
 
 SEND_ADDRESS = 10
 SEND_AMOUNT = 11
@@ -77,7 +72,6 @@ SEND_CONFIRM = 12
 # DATABASE
 # ============================================================
 
-
 def get_db() -> Session:
     return SessionLocal()
 
@@ -86,7 +80,6 @@ def get_db() -> Session:
 # ADMIN
 # ============================================================
 
-
 def get_admin_telegram_id() -> int | None:
 
     value = os.getenv(
@@ -94,18 +87,17 @@ def get_admin_telegram_id() -> int | None:
     )
 
     if not value:
-        logger.warning(
-            "ADMIN_TELEGRAM_ID is not configured."
-        )
         return None
 
     try:
         return int(value)
 
     except ValueError:
+
         logger.error(
             "ADMIN_TELEGRAM_ID must be an integer."
         )
+
         return None
 
 
@@ -125,32 +117,28 @@ async def notify_admin_about_ticket(
     if not admin_telegram_id:
         return
 
-    telegram_username = (
+    username = (
         f"@{user.telegram_username}"
         if user.telegram_username
         else "не указан"
     )
 
     text = (
-        "🚨 *НОВОЕ ОБРАЩЕНИЕ В ПОДДЕРЖКУ EDAAA*\n\n"
-        f"🎫 Номер: `#{ticket_id}`\n"
-        f"📂 Категория: *{category}*\n"
-        f"📌 Тема: *{subject}*\n\n"
-        "👤 *Пользователь*\n"
-        f"Telegram: `{telegram_username}`\n"
-        f"Edaaa User ID: `{user.id}`\n"
+        "🚨 *НОВОЕ ОБРАЩЕНИЕ EDAAA*\n\n"
+        f"🎫 `#{ticket_id}`\n"
+        f"📂 {category}\n"
+        f"📌 {subject}\n\n"
+        f"👤 `{username}`\n"
+        f"User ID: `{user.id}`\n"
         f"Telegram ID: `{user.telegram_id}`\n\n"
-        "💬 *Сообщение*\n"
-        f"{message_text}\n\n"
-        "⚠️ Не запрашивайте private key "
-        "или seed-фразу."
+        f"💬 {message_text}"
     )
 
     keyboard = InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "📨 Открыть обращение",
+                    "📨 Открыть",
                     callback_data=(
                         f"admin_ticket_{ticket_id}"
                     ),
@@ -180,12 +168,12 @@ async def notify_admin_about_ticket(
 # WALLET SECURITY
 # ============================================================
 
-
 def get_wallet_fernet() -> Fernet:
 
     key = settings.WALLET_ENCRYPTION_KEY
 
     if not key:
+
         raise RuntimeError(
             "WALLET_ENCRYPTION_KEY is not configured."
         )
@@ -223,19 +211,53 @@ def encrypt_private_key(
     private_key: str,
 ) -> str:
 
-    fernet = get_wallet_fernet()
-
-    encrypted = fernet.encrypt(
-        private_key.encode()
+    return (
+        get_wallet_fernet()
+        .encrypt(
+            private_key.encode()
+        )
+        .decode()
     )
 
-    return encrypted.decode()
+
+# ============================================================
+# BALANCE HELPERS
+# ============================================================
+
+def ensure_balance(
+    db: Session,
+    wallet: Wallet,
+    asset: str,
+) -> Balance:
+
+    balance = (
+        db.query(Balance)
+        .filter(
+            Balance.wallet_id == wallet.id,
+            Balance.asset == asset,
+        )
+        .first()
+    )
+
+    if balance:
+
+        return balance
+
+    balance = Balance(
+        wallet_id=wallet.id,
+        asset=asset,
+        amount=Decimal("0"),
+    )
+
+    db.add(balance)
+    db.flush()
+
+    return balance
 
 
 # ============================================================
-# TELEGRAM USER / WALLET
+# USER / WALLET
 # ============================================================
-
 
 def get_or_create_user(
     telegram_id: int,
@@ -259,16 +281,136 @@ def get_or_create_user(
             .first()
         )
 
+        # ----------------------------------------------------
+        # EXISTING USER
+        # ----------------------------------------------------
+
         if user:
 
             user.telegram_username = (
                 telegram_username
             )
 
+            wallet = (
+                db.query(Wallet)
+                .filter(
+                    Wallet.user_id
+                    == user.id
+                )
+                .order_by(
+                    Wallet.id.asc()
+                )
+                .first()
+            )
+
+            # ------------------------------------------------
+            # EXISTING WALLET
+            # ------------------------------------------------
+
+            if wallet:
+
+                ensure_balance(
+                    db,
+                    wallet,
+                    "ETH",
+                )
+
+                ensure_balance(
+                    db,
+                    wallet,
+                    "USDT",
+                )
+
+                wallet_key = (
+                    db.query(
+                        WalletKey
+                    )
+                    .filter(
+                        WalletKey.wallet_id
+                        == wallet.id
+                    )
+                    .first()
+                )
+
+                if not wallet_key:
+
+                    logger.warning(
+                        "Wallet %s has no encrypted private key.",
+                        wallet.id,
+                    )
+
+                db.commit()
+                db.refresh(user)
+
+                return user
+
+            # ------------------------------------------------
+            # USER WITHOUT WALLET
+            # ------------------------------------------------
+
+            logger.warning(
+                "Existing user %s has no wallet. "
+                "Creating one.",
+                user.id,
+            )
+
+            address, private_key = (
+                create_real_ethereum_wallet()
+            )
+
+            wallet = Wallet(
+                user_id=user.id,
+                address=address,
+                network=settings.ETH_NETWORK,
+            )
+
+            db.add(wallet)
+            db.flush()
+
+            encrypted_private_key = (
+                encrypt_private_key(
+                    private_key
+                )
+            )
+
+            db.add(
+                WalletKey(
+                    wallet_id=wallet.id,
+                    encrypted_private_key=(
+                        encrypted_private_key
+                    ),
+                )
+            )
+
+            ensure_balance(
+                db,
+                wallet,
+                "ETH",
+            )
+
+            ensure_balance(
+                db,
+                wallet,
+                "USDT",
+            )
+
             db.commit()
             db.refresh(user)
 
+            logger.info(
+                "Recovered wallet for existing "
+                "Telegram user | "
+                "user_id=%s | "
+                "wallet=%s",
+                user.id,
+                address,
+            )
+
             return user
+
+        # ----------------------------------------------------
+        # NEW USER
+        # ----------------------------------------------------
 
         email = (
             f"telegram_{telegram_id}"
@@ -286,7 +428,9 @@ def get_or_create_user(
             ),
             is_active=True,
             is_admin=False,
-            telegram_id=telegram_id_string,
+            telegram_id=(
+                telegram_id_string
+            ),
             telegram_username=(
                 telegram_username
             ),
@@ -308,43 +452,42 @@ def get_or_create_user(
         db.add(wallet)
         db.flush()
 
-        encrypted_private_key = (
-            encrypt_private_key(
-                private_key
+        db.add(
+            WalletKey(
+                wallet_id=wallet.id,
+                encrypted_private_key=(
+                    encrypt_private_key(
+                        private_key
+                    )
+                ),
             )
         )
 
-        wallet_key = WalletKey(
-            wallet_id=wallet.id,
-            encrypted_private_key=(
-                encrypted_private_key
-            ),
+        ensure_balance(
+            db,
+            wallet,
+            "ETH",
         )
 
-        db.add(wallet_key)
-
-        eth_balance = Balance(
-            wallet_id=wallet.id,
-            asset="ETH",
-            amount=Decimal("0"),
+        ensure_balance(
+            db,
+            wallet,
+            "USDT",
         )
-
-        usdt_balance = Balance(
-            wallet_id=wallet.id,
-            asset="USDT",
-            amount=Decimal("0"),
-        )
-
-        db.add(eth_balance)
-        db.add(usdt_balance)
 
         db.commit()
         db.refresh(user)
 
         logger.info(
-            "Created Telegram user %s with wallet %s",
+            "Created Telegram user | "
+            "telegram_id=%s | "
+            "user_id=%s | "
+            "wallet=%s | "
+            "network=%s",
             telegram_id_string,
+            user.id,
             address,
+            settings.ETH_NETWORK,
         )
 
         return user
@@ -354,7 +497,7 @@ def get_or_create_user(
         db.rollback()
 
         logger.exception(
-            "Failed to create Telegram user."
+            "Failed to create/recover Telegram user."
         )
 
         raise
@@ -375,7 +518,11 @@ def get_user_wallet(
         return (
             db.query(Wallet)
             .filter(
-                Wallet.user_id == user_id
+                Wallet.user_id
+                == user_id
+            )
+            .order_by(
+                Wallet.id.asc()
             )
             .first()
         )
@@ -388,7 +535,6 @@ def get_user_wallet(
 # ============================================================
 # BALANCES
 # ============================================================
-
 
 def get_balances(
     wallet_id: int,
@@ -416,14 +562,18 @@ def get_balances(
 
             if balance.asset == "ETH":
 
-                result["ETH"] = Decimal(
-                    balance.amount
+                result["ETH"] = (
+                    Decimal(
+                        balance.amount
+                    )
                 )
 
             elif balance.asset == "USDT":
 
-                result["USDT"] = Decimal(
-                    balance.amount
+                result["USDT"] = (
+                    Decimal(
+                        balance.amount
+                    )
                 )
 
         return result
@@ -436,7 +586,6 @@ def get_balances(
 # ============================================================
 # TRANSACTIONS
 # ============================================================
-
 
 def get_transactions(
     wallet_id: int,
@@ -455,7 +604,7 @@ def get_transactions(
             .order_by(
                 Transaction.created_at.desc()
             )
-            .limit(10)
+            .limit(20)
             .all()
         )
 
@@ -465,9 +614,8 @@ def get_transactions(
 
 
 # ============================================================
-# MAIN KEYBOARD
+# KEYBOARDS
 # ============================================================
-
 
 def main_keyboard():
 
@@ -477,7 +625,7 @@ def main_keyboard():
                 InlineKeyboardButton(
                     "💰 Кошелёк",
                     callback_data="wallet",
-                ),
+                )
             ],
             [
                 InlineKeyboardButton(
@@ -503,19 +651,19 @@ def main_keyboard():
                 InlineKeyboardButton(
                     "📜 История",
                     callback_data="history",
-                ),
+                )
             ],
             [
                 InlineKeyboardButton(
                     "🆘 Поддержка",
                     callback_data="support",
-                ),
+                )
             ],
             [
                 InlineKeyboardButton(
                     "👤 Профиль",
                     callback_data="profile",
-                ),
+                )
             ],
         ]
     )
@@ -533,11 +681,6 @@ def back_keyboard():
             ]
         ]
     )
-
-
-# ============================================================
-# SEND KEYBOARDS
-# ============================================================
 
 
 def send_cancel_keyboard():
@@ -560,7 +703,7 @@ def send_confirm_keyboard():
         [
             [
                 InlineKeyboardButton(
-                    "✅ Подтвердить отправку",
+                    "✅ Подтвердить",
                     callback_data="send_confirm",
                 )
             ],
@@ -575,9 +718,8 @@ def send_confirm_keyboard():
 
 
 # ============================================================
-# /START
+# START
 # ============================================================
-
 
 async def start(
     update: Update,
@@ -587,7 +729,9 @@ async def start(
     if not update.effective_user:
         return
 
-    telegram_user = update.effective_user
+    telegram_user = (
+        update.effective_user
+    )
 
     try:
 
@@ -605,27 +749,18 @@ async def start(
         if not wallet:
 
             await update.message.reply_text(
-                "❌ Не удалось создать "
-                "или найти ваш кошелёк."
+                "❌ Кошелёк не найден."
             )
 
             return
 
-        text = (
-            "🏦 *Добро пожаловать "
-            "в Edaaa Wallet!*\n\n"
-            "🔐 Ваш Telegram подключён "
-            "к Edaaa.\n\n"
-            "Ваш персональный Ethereum-"
-            "кошелёк уже создан.\n\n"
-            f"🌐 Сеть: `{wallet.network}`\n\n"
-            "📍 Ваш адрес:\n"
-            f"`{wallet.address}`\n\n"
-            "Выберите действие:"
-        )
-
         await update.message.reply_text(
-            text,
+            "🏦 *Edaaa Wallet*\n\n"
+            "Ваш персональный Ethereum-кошелёк.\n\n"
+            f"🌐 Сеть: `{wallet.network}`\n\n"
+            "📍 Адрес:\n"
+            f"`{wallet.address}`\n\n"
+            "Выберите действие:",
             parse_mode="Markdown",
             reply_markup=main_keyboard(),
         )
@@ -637,8 +772,7 @@ async def start(
         )
 
         await update.message.reply_text(
-            "❌ Произошла ошибка при "
-            "создании Edaaa Wallet.\n\n"
+            "❌ Ошибка Edaaa.\n\n"
             "Попробуйте ещё раз."
         )
 
@@ -646,7 +780,6 @@ async def start(
 # ============================================================
 # SEND START
 # ============================================================
-
 
 async def send_start(
     update: Update,
@@ -669,10 +802,7 @@ async def send_start(
 
     await query.edit_message_text(
         "📤 *Отправка ETH*\n\n"
-        "Введите Ethereum-адрес получателя.\n\n"
-        "Например:\n"
-        "`0x742d35Cc6634C0532925a3b844Bc454e4438f44e`\n\n"
-        f"🌐 Сеть: `{settings.ETH_NETWORK}`",
+        "Введите адрес получателя:",
         parse_mode="Markdown",
         reply_markup=send_cancel_keyboard(),
     )
@@ -684,13 +814,13 @@ async def send_start(
 # SEND ADDRESS
 # ============================================================
 
-
 async def send_address(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not update.message:
+
         return SEND_ADDRESS
 
     address = (
@@ -700,23 +830,27 @@ async def send_address(
 
     try:
 
-        address = validate_recipient_address(
-            address
+        address = (
+            validate_recipient_address(
+                address
+            )
         )
 
     except Exception:
 
         await update.message.reply_text(
-            "❌ Некорректный Ethereum-адрес.\n\n"
-            "Введите адрес ещё раз:",
+            "❌ Некорректный Ethereum-адрес.",
             reply_markup=send_cancel_keyboard(),
         )
 
         return SEND_ADDRESS
 
-    telegram_user = update.effective_user
+    telegram_user = (
+        update.effective_user
+    )
 
     if not telegram_user:
+
         return ConversationHandler.END
 
     user = get_or_create_user(
@@ -748,8 +882,7 @@ async def send_address(
 
         await update.message.reply_text(
             "❌ Нельзя отправить ETH "
-            "на собственный адрес.\n\n"
-            "Введите другой адрес:",
+            "на собственный адрес.",
             reply_markup=send_cancel_keyboard(),
         )
 
@@ -760,11 +893,8 @@ async def send_address(
     ] = address
 
     await update.message.reply_text(
-        "💰 *Введите сумму ETH*\n\n"
-        "Укажите количество ETH, "
-        "которое хотите отправить.\n\n"
-        "Например:\n"
-        "`0.001`",
+        "💰 Введите сумму ETH.\n\n"
+        "Например: `0.001`",
         parse_mode="Markdown",
         reply_markup=send_cancel_keyboard(),
     )
@@ -776,13 +906,13 @@ async def send_address(
 # SEND AMOUNT
 # ============================================================
 
-
 async def send_amount(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not update.message:
+
         return SEND_AMOUNT
 
     amount_text = (
@@ -802,10 +932,7 @@ async def send_amount(
     except InvalidOperation:
 
         await update.message.reply_text(
-            "❌ Некорректная сумма.\n\n"
-            "Введите число, например:\n"
-            "`0.001`",
-            parse_mode="Markdown",
+            "❌ Некорректная сумма.",
             reply_markup=send_cancel_keyboard(),
         )
 
@@ -823,16 +950,18 @@ async def send_amount(
     if amount.as_tuple().exponent < -18:
 
         await update.message.reply_text(
-            "❌ Максимальная точность — "
-            "18 знаков после запятой.",
+            "❌ Максимум 18 знаков после запятой.",
             reply_markup=send_cancel_keyboard(),
         )
 
         return SEND_AMOUNT
 
-    telegram_user = update.effective_user
+    telegram_user = (
+        update.effective_user
+    )
 
     if not telegram_user:
+
         return ConversationHandler.END
 
     try:
@@ -850,23 +979,23 @@ async def send_amount(
 
         if not wallet:
 
-            await update.message.reply_text(
-                "❌ Кошелёк не найден.",
-                reply_markup=back_keyboard(),
+            raise RuntimeError(
+                "Wallet not found."
             )
-
-            return ConversationHandler.END
 
         web3 = get_web3()
 
-        sender_address = (
+        address = (
             Web3.to_checksum_address(
                 wallet.address
             )
         )
 
-        balance_wei = web3.eth.get_balance(
-            sender_address
+        balance_wei = (
+            web3.eth.get_balance(
+                address,
+                "pending",
+            )
         )
 
         balance_eth = Decimal(
@@ -878,12 +1007,15 @@ async def send_amount(
             )
         )
 
-        gas_price = web3.eth.gas_price
+        gas_price = (
+            web3.eth.gas_price
+        )
 
         gas_limit = 21000
 
         gas_cost_wei = (
-            gas_price * gas_limit
+            gas_price
+            * gas_limit
         )
 
         gas_cost_eth = Decimal(
@@ -895,20 +1027,14 @@ async def send_amount(
             )
         )
 
-        if balance_wei <= 0:
+        amount_wei = Web3.to_wei(
+            amount,
+            "ether",
+        )
 
-            await update.message.reply_text(
-                "❌ На кошельке нет ETH.",
-                reply_markup=back_keyboard(),
-            )
-
-            return ConversationHandler.END
-
-        if balance_wei < (
-            Web3.to_wei(
-                amount,
-                "ether",
-            )
+        if (
+            balance_wei
+            < amount_wei
             + gas_cost_wei
         ):
 
@@ -916,8 +1042,7 @@ async def send_amount(
                 "❌ Недостаточно ETH.\n\n"
                 f"Баланс: `{balance_eth} ETH`\n"
                 f"Сумма: `{amount} ETH`\n"
-                f"Комиссия: ~`{gas_cost_eth} ETH`\n\n"
-                "Уменьшите сумму или пополните кошелёк.",
+                f"Газ: ~`{gas_cost_eth} ETH`",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard(),
             )
@@ -932,18 +1057,19 @@ async def send_amount(
             "send_gas_cost"
         ] = str(gas_cost_eth)
 
-        to_address = context.user_data.get(
-            "send_to_address"
+        to_address = (
+            context.user_data.get(
+                "send_to_address"
+            )
         )
 
         await update.message.reply_text(
-            "🔎 *Проверка отправки*\n\n"
-            f"🌐 Сеть: `{settings.ETH_NETWORK}`\n\n"
-            f"📤 Получатель:\n`{to_address}`\n\n"
-            f"💰 Сумма: `{amount} ETH`\n"
-            f"⛽ Комиссия: ~`{gas_cost_eth} ETH`\n\n"
+            "🔎 *Проверка*\n\n"
+            f"📤 `{to_address}`\n\n"
+            f"💰 `{amount} ETH`\n"
+            f"⛽ ~`{gas_cost_eth} ETH`\n"
             f"💳 Баланс: `{balance_eth} ETH`\n\n"
-            "Проверьте данные перед отправкой.",
+            "Подтвердите отправку.",
             parse_mode="Markdown",
             reply_markup=send_confirm_keyboard(),
         )
@@ -958,7 +1084,7 @@ async def send_amount(
 
         await update.message.reply_text(
             "❌ Не удалось подготовить транзакцию.\n\n"
-            f"`{str(exc)}`",
+            f"`{str(exc)[:1000]}`",
             parse_mode="Markdown",
             reply_markup=back_keyboard(),
         )
@@ -970,7 +1096,6 @@ async def send_amount(
 # SEND CONFIRM
 # ============================================================
 
-
 async def send_confirm(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -979,37 +1104,42 @@ async def send_confirm(
     query = update.callback_query
 
     await query.answer(
-        "Отправляем транзакцию..."
+        "Подписываем и отправляем..."
     )
 
-    telegram_user = query.from_user
+    telegram_user = (
+        query.from_user
+    )
 
     if not telegram_user:
 
-        await query.edit_message_text(
-            "❌ Пользователь не найден.",
-            reply_markup=back_keyboard(),
-        )
-
         return ConversationHandler.END
 
-    to_address = context.user_data.get(
-        "send_to_address"
+    to_address = (
+        context.user_data.get(
+            "send_to_address"
+        )
     )
 
-    amount_text = context.user_data.get(
-        "send_amount"
+    amount_text = (
+        context.user_data.get(
+            "send_amount"
+        )
     )
 
     if not to_address or not amount_text:
 
         await query.edit_message_text(
-            "❌ Данные транзакции потеряны.\n\n"
-            "Начните отправку заново.",
+            "❌ Сессия отправки истекла.",
             reply_markup=back_keyboard(),
         )
 
         return ConversationHandler.END
+
+    db = get_db()
+
+    transaction = None
+    private_key = None
 
     try:
 
@@ -1024,135 +1154,133 @@ async def send_confirm(
             ),
         )
 
-        db = get_db()
+        wallet = (
+            db.query(Wallet)
+            .filter(
+                Wallet.user_id
+                == user.id
+            )
+            .order_by(
+                Wallet.id.asc()
+            )
+            .first()
+        )
+
+        if not wallet:
+
+            raise RuntimeError(
+                "Wallet not found."
+            )
+
+        if (
+            wallet.network
+            != settings.ETH_NETWORK
+            and wallet.network != "ethereum"
+        ):
+
+            raise RuntimeError(
+                "Wallet network mismatch."
+            )
+
+        to_address = (
+            validate_recipient_address(
+                to_address
+            )
+        )
+
+        if (
+            Web3.to_checksum_address(
+                wallet.address
+            )
+            == to_address
+        ):
+
+            raise RuntimeError(
+                "Cannot send ETH to "
+                "the same wallet."
+            )
+
+        # ----------------------------------------------------
+        # Create history record BEFORE broadcast.
+        # ----------------------------------------------------
+
+        transaction = Transaction(
+            wallet_id=wallet.id,
+            type="withdraw",
+            asset="ETH",
+            amount=amount,
+            status="broadcasting",
+            tx_hash=None,
+        )
+
+        db.add(transaction)
+
+        db.commit()
+        db.refresh(transaction)
+
+        # ----------------------------------------------------
+        # RPC
+        # ----------------------------------------------------
+
+        web3 = get_web3()
+
+        private_key = (
+            get_wallet_private_key(
+                wallet=wallet,
+                db=db,
+                decrypt_private_key=(
+                    _decrypt_private_key
+                ),
+            )
+        )
 
         try:
 
-            wallet = (
-                db.query(Wallet)
-                .filter(
-                    Wallet.user_id
-                    == user.id
-                )
-                .first()
-            )
-
-            if not wallet:
-
-                await query.edit_message_text(
-                    "❌ Кошелёк не найден.",
-                    reply_markup=back_keyboard(),
-                )
-
-                return ConversationHandler.END
-
-            if (
-                wallet.network
-                != settings.ETH_NETWORK
-            ):
-
-                await query.edit_message_text(
-                    "❌ Сеть кошелька "
-                    "не совпадает с сетью Edaaa.",
-                    reply_markup=back_keyboard(),
-                )
-
-                return ConversationHandler.END
-
-            to_address = (
-                validate_recipient_address(
-                    to_address
-                )
-            )
-
-            if (
-                Web3.to_checksum_address(
-                    wallet.address
-                )
-                == to_address
-            ):
-
-                await query.edit_message_text(
-                    "❌ Нельзя отправить ETH "
-                    "на собственный адрес.",
-                    reply_markup=back_keyboard(),
-                )
-
-                return ConversationHandler.END
-
-            web3 = get_web3()
-
-            private_key = (
-                get_wallet_private_key(
+            transaction_data = (
+                create_eth_transaction(
+                    web3=web3,
                     wallet=wallet,
-                    db=db,
-                    decrypt_private_key=(
-                        _decrypt_private_key
+                    private_key=private_key,
+                    to_address=to_address,
+                    amount=amount,
+                )
+            )
+
+            tx_hash = (
+                sign_and_send_eth_transaction(
+                    web3=web3,
+                    private_key=private_key,
+                    transaction=(
+                        transaction_data
                     ),
                 )
             )
 
-            try:
-
-                transaction = (
-                    create_eth_transaction(
-                        web3=web3,
-                        wallet=wallet,
-                        private_key=private_key,
-                        to_address=to_address,
-                        amount=amount,
-                    )
-                )
-
-                tx_hash = (
-                    sign_and_send_eth_transaction(
-                        web3=web3,
-                        private_key=private_key,
-                        transaction=transaction,
-                    )
-                )
-
-            finally:
-
-                private_key = None
-
-            send_transaction = Transaction(
-                wallet_id=wallet.id,
-                type="withdraw",
-                asset="ETH",
-                amount=amount,
-                status="pending",
-                tx_hash=tx_hash,
-            )
-
-            db.add(
-                send_transaction
-            )
-
-            db.commit()
-
-            db.refresh(
-                send_transaction
-            )
-
         finally:
 
-            db.close()
+            private_key = None
 
-        context.user_data.pop(
-            "send_to_address",
-            None,
+        transaction.tx_hash = (
+            tx_hash
         )
 
-        context.user_data.pop(
-            "send_amount",
-            None,
+        transaction.status = (
+            "pending"
         )
 
-        context.user_data.pop(
-            "send_gas_cost",
-            None,
+        db.commit()
+
+        logger.info(
+            "ETH transaction broadcast | "
+            "transaction_id=%s | "
+            "wallet=%s | "
+            "tx=%s",
+            transaction.id,
+            wallet.address,
+            tx_hash,
         )
+
+        context.user_data.clear()
 
         await query.edit_message_text(
             "✅ *ETH отправлен!*\n\n"
@@ -1163,8 +1291,8 @@ async def send_confirm(
             "📜 TX Hash:\n"
             f"`{tx_hash}`\n\n"
             "📊 Статус: `pending`\n\n"
-            "После подтверждения блокчейном "
-            "транзакция будет обработана.",
+            "Edaaa автоматически отслеживает "
+            "подтверждение транзакции.",
             parse_mode="Markdown",
             reply_markup=back_keyboard(),
         )
@@ -1173,45 +1301,56 @@ async def send_confirm(
 
     except Exception as exc:
 
+        if transaction:
+
+            try:
+
+                transaction.status = (
+                    "failed"
+                )
+
+                db.commit()
+
+            except Exception:
+
+                db.rollback()
+
         logger.exception(
             "ETH send failed."
         )
 
-        error_text = str(exc)
-
-        if len(error_text) > 1000:
-            error_text = error_text[:1000]
-
         await query.edit_message_text(
-            "❌ *Не удалось отправить ETH.*\n\n"
-            f"`{error_text}`",
+            "❌ *ETH не отправлен.*\n\n"
+            f"`{str(exc)[:1000]}`",
             parse_mode="Markdown",
             reply_markup=back_keyboard(),
         )
 
         return ConversationHandler.END
 
+    finally:
 
-# ============================================================
-# PRIVATE KEY DECRYPTION
-# ============================================================
+        private_key = None
+
+        db.close()
 
 
 def _decrypt_private_key(
     encrypted_private_key: str,
 ) -> str:
 
-    fernet = get_wallet_fernet()
-
-    return fernet.decrypt(
-        encrypted_private_key.encode()
-    ).decode()
+    return (
+        get_wallet_fernet()
+        .decrypt(
+            encrypted_private_key.encode()
+        )
+        .decode()
+    )
 
 
 # ============================================================
 # SEND CANCEL
 # ============================================================
-
 
 async def send_cancel(
     update: Update,
@@ -1246,9 +1385,8 @@ async def send_cancel(
 
 
 # ============================================================
-# SUPPORT KEYBOARDS
+# SUPPORT
 # ============================================================
-
 
 def support_keyboard():
 
@@ -1278,13 +1416,13 @@ def support_keyboard():
                 InlineKeyboardButton(
                     "🔐 Безопасность",
                     callback_data="support_cat_security",
-                ),
+                )
             ],
             [
                 InlineKeyboardButton(
                     "⚠️ Другое",
                     callback_data="support_cat_other",
-                ),
+                )
             ],
             [
                 InlineKeyboardButton(
@@ -1310,11 +1448,6 @@ def support_cancel_keyboard():
     )
 
 
-# ============================================================
-# SUPPORT START
-# ============================================================
-
-
 async def support_start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1324,34 +1457,16 @@ async def support_start(
 
     await query.answer()
 
-    context.user_data.pop(
-        "support_category",
-        None,
-    )
-
-    context.user_data.pop(
-        "support_subject",
-        None,
-    )
-
-    context.user_data.pop(
-        "support_message",
-        None,
-    )
+    context.user_data.clear()
 
     await query.edit_message_text(
         "🆘 *Центр поддержки Edaaa*\n\n"
-        "Выберите категорию обращения:",
+        "Выберите категорию:",
         parse_mode="Markdown",
         reply_markup=support_keyboard(),
     )
 
     return SUPPORT_CATEGORY
-
-
-# ============================================================
-# SUPPORT CATEGORY
-# ============================================================
 
 
 async def support_category(
@@ -1378,11 +1493,6 @@ async def support_category(
 
     if not category:
 
-        await query.edit_message_text(
-            "❌ Неизвестная категория.",
-            reply_markup=back_keyboard(),
-        )
-
         return ConversationHandler.END
 
     context.user_data[
@@ -1392,17 +1502,12 @@ async def support_category(
     await query.edit_message_text(
         "🆘 *Новое обращение*\n\n"
         f"Категория: *{category}*\n\n"
-        "Теперь напишите краткую тему обращения.",
+        "Напишите тему:",
         parse_mode="Markdown",
         reply_markup=support_cancel_keyboard(),
     )
 
     return SUPPORT_SUBJECT
-
-
-# ============================================================
-# SUPPORT SUBJECT
-# ============================================================
 
 
 async def support_subject(
@@ -1411,6 +1516,7 @@ async def support_subject(
 ):
 
     if not update.message:
+
         return SUPPORT_SUBJECT
 
     subject = (
@@ -1420,17 +1526,12 @@ async def support_subject(
 
     if not subject:
 
-        await update.message.reply_text(
-            "❌ Тема не может быть пустой.",
-            reply_markup=support_cancel_keyboard(),
-        )
-
         return SUPPORT_SUBJECT
 
     if len(subject) > 255:
 
         await update.message.reply_text(
-            "❌ Максимум — 255 символов.",
+            "❌ Максимум 255 символов.",
             reply_markup=support_cancel_keyboard(),
         )
 
@@ -1442,18 +1543,13 @@ async def support_subject(
 
     await update.message.reply_text(
         "📝 *Опишите проблему подробно.*\n\n"
-        "⚠️ Никогда не отправляйте "
-        "private key, seed-фразу или пароль.",
+        "⚠️ Не отправляйте private key, "
+        "seed-фразу или пароль.",
         parse_mode="Markdown",
         reply_markup=support_cancel_keyboard(),
     )
 
     return SUPPORT_MESSAGE
-
-
-# ============================================================
-# SUPPORT MESSAGE
-# ============================================================
 
 
 async def support_message(
@@ -1462,6 +1558,7 @@ async def support_message(
 ):
 
     if not update.message:
+
         return SUPPORT_MESSAGE
 
     message_text = (
@@ -1471,26 +1568,26 @@ async def support_message(
 
     if not message_text:
 
-        await update.message.reply_text(
-            "❌ Сообщение не может быть пустым.",
-            reply_markup=support_cancel_keyboard(),
-        )
-
         return SUPPORT_MESSAGE
 
     if len(message_text) > 5000:
 
         await update.message.reply_text(
-            "❌ Максимум — 5000 символов.",
+            "❌ Максимум 5000 символов.",
             reply_markup=support_cancel_keyboard(),
         )
 
         return SUPPORT_MESSAGE
 
-    telegram_user = update.effective_user
+    telegram_user = (
+        update.effective_user
+    )
 
     if not telegram_user:
+
         return ConversationHandler.END
+
+    db = get_db()
 
     try:
 
@@ -1508,48 +1605,32 @@ async def support_message(
 
         subject = context.user_data.get(
             "support_subject",
-            "Обращение в поддержку",
+            "Обращение",
         )
 
-        db = get_db()
+        ticket = SupportTicket(
+            user_id=user.id,
+            category=category,
+            subject=subject,
+            status="open",
+            priority="normal",
+        )
 
-        try:
+        db.add(ticket)
+        db.flush()
 
-            ticket = SupportTicket(
-                user_id=user.id,
-                category=category,
-                subject=subject,
-                status="open",
-                priority="normal",
-            )
-
-            db.add(ticket)
-            db.flush()
-
-            support_message_record = SupportMessage(
+        db.add(
+            SupportMessage(
                 ticket_id=ticket.id,
                 sender_type="user",
                 sender_id=user.id,
                 message=message_text,
             )
+        )
 
-            db.add(
-                support_message_record
-            )
+        db.commit()
 
-            db.commit()
-            db.refresh(ticket)
-
-            ticket_id = ticket.id
-
-        except Exception:
-
-            db.rollback()
-            raise
-
-        finally:
-
-            db.close()
+        ticket_id = ticket.id
 
         await notify_admin_about_ticket(
             context=context,
@@ -1560,21 +1641,13 @@ async def support_message(
             message_text=message_text,
         )
 
-        context.user_data.pop(
-            "support_category",
-            None,
-        )
-
-        context.user_data.pop(
-            "support_subject",
-            None,
-        )
+        context.user_data.clear()
 
         await update.message.reply_text(
             "✅ *Обращение создано!*\n\n"
-            f"🎫 Номер: `#{ticket_id}`\n"
-            f"📂 Категория: *{category}*\n"
-            f"📌 Тема: *{subject}*",
+            f"🎫 `#{ticket_id}`\n"
+            f"📂 {category}\n"
+            f"📌 {subject}",
             parse_mode="Markdown",
             reply_markup=back_keyboard(),
         )
@@ -1582,6 +1655,8 @@ async def support_message(
         return ConversationHandler.END
 
     except Exception:
+
+        db.rollback()
 
         logger.exception(
             "Failed to create support ticket."
@@ -1594,10 +1669,9 @@ async def support_message(
 
         return ConversationHandler.END
 
+    finally:
 
-# ============================================================
-# SUPPORT CANCEL
-# ============================================================
+        db.close()
 
 
 async def support_cancel(
@@ -1609,23 +1683,10 @@ async def support_cancel(
 
     await query.answer()
 
-    context.user_data.pop(
-        "support_category",
-        None,
-    )
-
-    context.user_data.pop(
-        "support_subject",
-        None,
-    )
-
-    context.user_data.pop(
-        "support_message",
-        None,
-    )
+    context.user_data.clear()
 
     await query.edit_message_text(
-        "❌ Создание обращения отменено.",
+        "❌ Обращение отменено.",
         reply_markup=back_keyboard(),
     )
 
@@ -1633,21 +1694,18 @@ async def support_cancel(
 
 
 # ============================================================
-# SHOW SUPPORT TICKET
+# SUPPORT TICKET VIEW
 # ============================================================
-
 
 async def show_support_ticket(
     query,
     ticket_id: int,
 ):
 
-    telegram_user = query.from_user
-
     user = get_or_create_user(
-        telegram_id=telegram_user.id,
+        telegram_id=query.from_user.id,
         telegram_username=(
-            telegram_user.username
+            query.from_user.username
         ),
     )
 
@@ -1688,11 +1746,11 @@ async def show_support_ticket(
         lines = [
             f"🎫 *Обращение #{ticket.id}*",
             "",
-            f"📂 Категория: *{ticket.category}*",
-            f"📌 Тема: *{ticket.subject}*",
-            f"📊 Статус: *{ticket.status}*",
+            f"📂 {ticket.category}",
+            f"📌 {ticket.subject}",
+            f"📊 {ticket.status}",
             "",
-            "💬 *Переписка:*",
+            "💬 *Переписка*",
             "",
         ]
 
@@ -1702,8 +1760,6 @@ async def show_support_ticket(
                 "👤 Вы"
                 if message.sender_type == "user"
                 else "🛡 Поддержка"
-                if message.sender_type == "admin"
-                else "🤖 Edaaa"
             )
 
             lines.append(
@@ -1714,22 +1770,7 @@ async def show_support_ticket(
         await query.edit_message_text(
             "\n".join(lines),
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "⬅️ Поддержка",
-                            callback_data="support",
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🏠 Главное меню",
-                            callback_data="main",
-                        )
-                    ],
-                ]
-            ),
+            reply_markup=back_keyboard(),
         )
 
     finally:
@@ -1738,38 +1779,22 @@ async def show_support_ticket(
 
 
 # ============================================================
-# SHOW SUPPORT
+# ADMIN TICKET
 # ============================================================
-
-
-async def show_support(query):
-
-    await query.edit_message_text(
-        "🆘 *Центр поддержки Edaaa*\n\n"
-        "Выберите категорию проблемы:",
-        parse_mode="Markdown",
-        reply_markup=support_keyboard(),
-    )
-
-
-# ============================================================
-# ADMIN SHOW TICKET
-# ============================================================
-
 
 async def show_admin_ticket(
     query,
     ticket_id: int,
 ):
 
-    admin_telegram_id = (
+    admin_id = (
         get_admin_telegram_id()
     )
 
     if (
-        not admin_telegram_id
+        not admin_id
         or query.from_user.id
-        != admin_telegram_id
+        != admin_id
     ):
 
         await query.answer(
@@ -1820,26 +1845,16 @@ async def show_admin_ticket(
             .all()
         )
 
-        telegram_username = (
-            f"@{user.telegram_username}"
-            if user and user.telegram_username
-            else "не указан"
-        )
-
         lines = [
-            "🛡 *Панель поддержки Edaaa*",
+            "🛡 *Поддержка Edaaa*",
             "",
-            f"🎫 Обращение `#{ticket.id}`",
-            f"📂 Категория: *{ticket.category}*",
-            f"📌 Тема: *{ticket.subject}*",
-            f"📊 Статус: *{ticket.status}*",
-            f"🔥 Приоритет: *{ticket.priority}*",
+            f"🎫 `#{ticket.id}`",
+            f"📂 {ticket.category}",
+            f"📌 {ticket.subject}",
+            f"📊 {ticket.status}",
+            f"🔥 {ticket.priority}",
             "",
-            "👤 *Пользователь*",
-            f"Telegram: `{telegram_username}`",
-            f"User ID: `{ticket.user_id}`",
-            "",
-            "💬 *Переписка*",
+            f"👤 User ID: `{ticket.user_id}`",
             "",
         ]
 
@@ -1849,8 +1864,6 @@ async def show_admin_ticket(
                 "👤 Пользователь"
                 if message.sender_type == "user"
                 else "🛡 Администратор"
-                if message.sender_type == "admin"
-                else "🤖 Edaaa"
             )
 
             lines.append(
@@ -1887,9 +1900,152 @@ async def show_admin_ticket(
 
 
 # ============================================================
-# CALLBACK HANDLER
+# MAIN VIEWS
 # ============================================================
 
+async def show_main(
+    query,
+    wallet,
+):
+
+    await query.edit_message_text(
+        "🏦 *Edaaa Wallet*\n\n"
+        f"🌐 `{wallet.network}`\n\n"
+        "Выберите действие:",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
+    )
+
+
+async def show_wallet(
+    query,
+    wallet,
+):
+
+    balances = get_balances(
+        wallet.id
+    )
+
+    await query.edit_message_text(
+        "💰 *Ваш Edaaa Wallet*\n\n"
+        f"Ξ ETH: `{balances['ETH']}`\n"
+        f"💵 USDT: `{balances['USDT']}`\n\n"
+        f"🌐 `{wallet.network}`\n\n"
+        "📍\n"
+        f"`{wallet.address}`",
+        parse_mode="Markdown",
+        reply_markup=back_keyboard(),
+    )
+
+
+async def show_deposit(
+    query,
+    wallet,
+):
+
+    await query.edit_message_text(
+        "📥 *Пополнение*\n\n"
+        "Отправьте ETH на адрес:\n\n"
+        f"`{wallet.address}`\n\n"
+        f"🌐 `{settings.ETH_NETWORK}`\n\n"
+        "После 3 подтверждений депозит "
+        "будет зачислен.",
+        parse_mode="Markdown",
+        reply_markup=back_keyboard(),
+    )
+
+
+async def show_history(
+    query,
+    wallet,
+):
+
+    transactions = get_transactions(
+        wallet.id
+    )
+
+    if not transactions:
+
+        text = (
+            "📜 *История*\n\n"
+            "Операций пока нет."
+        )
+
+    else:
+
+        lines = [
+            "📜 *История операций*",
+            "",
+        ]
+
+        for transaction in transactions:
+
+            tx_icon = (
+                "📥"
+                if transaction.type == "deposit"
+                else "📤"
+                if transaction.type == "withdraw"
+                else "🔄"
+            )
+
+            lines.append(
+                f"{tx_icon} "
+                f"{transaction.type} — "
+                f"{transaction.amount} "
+                f"{transaction.asset} — "
+                f"`{transaction.status}`"
+            )
+
+        text = "\n".join(
+            lines
+        )
+
+    await query.edit_message_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=back_keyboard(),
+    )
+
+
+async def show_profile(
+    query,
+    user,
+    wallet,
+):
+
+    username = (
+        f"@{user.telegram_username}"
+        if user.telegram_username
+        else "не указан"
+    )
+
+    await query.edit_message_text(
+        "👤 *Профиль Edaaa*\n\n"
+        f"Telegram: `{username}`\n"
+        f"Edaaa User ID: `{user.id}`\n"
+        f"Telegram ID: `{user.telegram_id}`\n\n"
+        f"💼 `{wallet.address}`\n"
+        f"🌐 `{wallet.network}`",
+        parse_mode="Markdown",
+        reply_markup=back_keyboard(),
+    )
+
+
+async def show_support(
+    query,
+):
+
+    await query.edit_message_text(
+        "🆘 *Центр поддержки Edaaa*\n\n"
+        "Выберите категорию:",
+        parse_mode="Markdown",
+        reply_markup=support_keyboard(),
+    )
+
+
+# ============================================================
+# CALLBACK
+# ============================================================
 
 async def button_handler(
     update: Update,
@@ -1901,9 +2057,8 @@ async def button_handler(
     await query.answer()
 
     if not query.from_user:
-        return
 
-    telegram_user = query.from_user
+        return
 
     try:
 
@@ -1911,23 +2066,13 @@ async def button_handler(
             "admin_ticket_"
         ):
 
-            try:
-
-                ticket_id = int(
-                    query.data.replace(
-                        "admin_ticket_",
-                        "",
-                        1,
-                    )
+            ticket_id = int(
+                query.data.replace(
+                    "admin_ticket_",
+                    "",
+                    1,
                 )
-
-            except ValueError:
-
-                await query.edit_message_text(
-                    "❌ Некорректный номер обращения."
-                )
-
-                return
+            )
 
             await show_admin_ticket(
                 query,
@@ -1937,9 +2082,9 @@ async def button_handler(
             return
 
         user = get_or_create_user(
-            telegram_id=telegram_user.id,
+            telegram_id=query.from_user.id,
             telegram_username=(
-                telegram_user.username
+                query.from_user.username
             ),
         )
 
@@ -1984,12 +2129,34 @@ async def button_handler(
                 wallet,
             )
 
+        elif query.data == "support":
+
+            await show_support(
+                query
+            )
+
+        elif query.data.startswith(
+            "support_ticket_"
+        ):
+
+            ticket_id = int(
+                query.data.replace(
+                    "support_ticket_",
+                    "",
+                    1,
+                )
+            )
+
+            await show_support_ticket(
+                query,
+                ticket_id,
+            )
+
         elif query.data == "buy_usdt":
 
             await query.edit_message_text(
                 "💱 *Купить USDT*\n\n"
-                "P2P-модуль находится "
-                "в разработке.",
+                "P2P-модуль готовим следующим этапом.",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard(),
             )
@@ -1998,42 +2165,9 @@ async def button_handler(
 
             await query.edit_message_text(
                 "💵 *Продать USDT*\n\n"
-                "P2P-модуль находится "
-                "в разработке.",
+                "P2P-модуль готовим следующим этапом.",
                 parse_mode="Markdown",
                 reply_markup=back_keyboard(),
-            )
-
-        elif query.data == "support":
-
-            await show_support(query)
-
-        elif query.data.startswith(
-            "support_ticket_"
-        ):
-
-            try:
-
-                ticket_id = int(
-                    query.data.replace(
-                        "support_ticket_",
-                        "",
-                        1,
-                    )
-                )
-
-            except ValueError:
-
-                await query.edit_message_text(
-                    "❌ Некорректный номер обращения.",
-                    reply_markup=back_keyboard(),
-                )
-
-                return
-
-            await show_support_ticket(
-                query,
-                ticket_id,
             )
 
         elif query.data == "profile":
@@ -2053,8 +2187,7 @@ async def button_handler(
         try:
 
             await query.edit_message_text(
-                "❌ Произошла ошибка.\n\n"
-                "Попробуйте ещё раз.",
+                "❌ Произошла ошибка.",
                 reply_markup=back_keyboard(),
             )
 
@@ -2064,152 +2197,8 @@ async def button_handler(
 
 
 # ============================================================
-# MAIN MENU
+# ERROR
 # ============================================================
-
-
-async def show_main(
-    query,
-    wallet,
-):
-
-    await query.edit_message_text(
-        "🏦 *Edaaa Wallet*\n\n"
-        f"🌐 Сеть: `{wallet.network}`\n\n"
-        "Выберите действие:",
-        parse_mode="Markdown",
-        reply_markup=main_keyboard(),
-    )
-
-
-# ============================================================
-# WALLET
-# ============================================================
-
-
-async def show_wallet(
-    query,
-    wallet,
-):
-
-    balances = get_balances(
-        wallet.id
-    )
-
-    await query.edit_message_text(
-        "💰 *Ваш Edaaa Wallet*\n\n"
-        f"Ξ ETH: `{balances['ETH']}`\n"
-        f"💵 USDT: `{balances['USDT']}`\n\n"
-        f"🌐 Сеть: `{wallet.network}`\n\n"
-        "📍 Адрес:\n"
-        f"`{wallet.address}`",
-        parse_mode="Markdown",
-        reply_markup=back_keyboard(),
-    )
-
-
-# ============================================================
-# DEPOSIT
-# ============================================================
-
-
-async def show_deposit(
-    query,
-    wallet,
-):
-
-    await query.edit_message_text(
-        "📥 *Пополнение кошелька*\n\n"
-        "Отправьте ETH на адрес:\n\n"
-        f"`{wallet.address}`\n\n"
-        f"🌐 Сеть: `{wallet.network}`\n\n"
-        "После необходимого количества "
-        "подтверждений депозит будет зачислен.",
-        parse_mode="Markdown",
-        reply_markup=back_keyboard(),
-    )
-
-
-# ============================================================
-# HISTORY
-# ============================================================
-
-
-async def show_history(
-    query,
-    wallet,
-):
-
-    transactions = get_transactions(
-        wallet.id
-    )
-
-    if not transactions:
-
-        text = (
-            "📜 *История операций*\n\n"
-            "Операций пока нет."
-        )
-
-    else:
-
-        lines = [
-            "📜 *Последние операции*",
-            "",
-        ]
-
-        for transaction in transactions:
-
-            lines.append(
-                f"• {transaction.type} — "
-                f"{transaction.amount} "
-                f"{transaction.asset} — "
-                f"{transaction.status}"
-            )
-
-        text = "\n".join(lines)
-
-    await query.edit_message_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=back_keyboard(),
-    )
-
-
-# ============================================================
-# PROFILE
-# ============================================================
-
-
-async def show_profile(
-    query,
-    user,
-    wallet,
-):
-
-    username = (
-        f"@{user.telegram_username}"
-        if user.telegram_username
-        else "не указан"
-    )
-
-    await query.edit_message_text(
-        "👤 *Профиль Edaaa*\n\n"
-        f"Telegram: `{username}`\n"
-        f"Edaaa User ID: `{user.id}`\n"
-        f"Telegram ID: `{user.telegram_id}`\n\n"
-        "💼 Wallet:\n"
-        f"`{wallet.address}`\n\n"
-        f"🌐 Network: `{wallet.network}`",
-        parse_mode="Markdown",
-        reply_markup=back_keyboard(),
-    )
-
-
-# ============================================================
-# ERROR HANDLER
-# ============================================================
-
 
 async def error_handler(
     update: object,
@@ -2224,9 +2213,8 @@ async def error_handler(
 
 
 # ============================================================
-# CREATE APPLICATION
+# APPLICATION
 # ============================================================
-
 
 def create_telegram_application():
 
@@ -2250,10 +2238,6 @@ def create_telegram_application():
             start,
         )
     )
-
-    # ========================================================
-    # SEND ETH CONVERSATION
-    # ========================================================
 
     send_conversation = ConversationHandler(
         entry_points=[
@@ -2308,10 +2292,6 @@ def create_telegram_application():
     application.add_handler(
         send_conversation
     )
-
-    # ========================================================
-    # SUPPORT CONVERSATION
-    # ========================================================
 
     support_conversation = ConversationHandler(
         entry_points=[
