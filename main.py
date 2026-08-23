@@ -2,7 +2,10 @@ import asyncio
 import logging
 from decimal import Decimal
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import (
+    Fernet,
+    InvalidToken,
+)
 
 from fastapi import (
     Depends,
@@ -11,14 +14,19 @@ from fastapi import (
     status,
 )
 
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import (
+    CORSMiddleware,
+)
 
 from fastapi.security import (
     HTTPAuthorizationCredentials,
     HTTPBearer,
 )
 
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    Field,
+)
 
 from sqlalchemy.orm import Session
 
@@ -56,9 +64,13 @@ from app.blockchain_state_models import (
     BlockchainState,
 )
 
-from app.blockchain_scanner import scan_once
+from app.blockchain_scanner import (
+    scan_once,
+)
 
-from app.send_models import SendTransaction
+from app.send_models import (
+    SendTransaction,
+)
 
 from app.send_schemas import (
     SendETHRequest,
@@ -78,10 +90,6 @@ from app.telegram_bot import (
 )
 
 
-# ============================================================
-# LOGGING
-# ============================================================
-
 logging.basicConfig(
     level=logging.INFO,
 )
@@ -91,14 +99,10 @@ logger = logging.getLogger(
 )
 
 
-# ============================================================
-# FASTAPI
-# ============================================================
-
 app = FastAPI(
     title="Edaaa Wallet",
     description="Edaaa Cryptocurrency Wallet API",
-    version="0.9.0",
+    version="1.0.0",
 )
 
 
@@ -114,10 +118,6 @@ app.add_middleware(
 security = HTTPBearer()
 
 
-# ============================================================
-# ADMIN DEPOSIT
-# ============================================================
-
 class AdminDepositRequest(BaseModel):
 
     user_id: int = Field(
@@ -129,10 +129,6 @@ class AdminDepositRequest(BaseModel):
     )
 
 
-# ============================================================
-# GLOBAL TASKS
-# ============================================================
-
 blockchain_scanner_task = None
 
 telegram_application = None
@@ -141,7 +137,7 @@ telegram_bot_task = None
 
 
 # ============================================================
-# WALLET ENCRYPTION
+# WALLET SECURITY
 # ============================================================
 
 def get_wallet_fernet() -> Fernet:
@@ -151,9 +147,7 @@ def get_wallet_fernet() -> Fernet:
     if not key:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_503_SERVICE_UNAVAILABLE
-            ),
+            status_code=503,
             detail=(
                 "WALLET_ENCRYPTION_KEY "
                 "is not configured."
@@ -169,9 +163,7 @@ def get_wallet_fernet() -> Fernet:
     except Exception as exc:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_500_INTERNAL_SERVER_ERROR
-            ),
+            status_code=500,
             detail=(
                 "Invalid WALLET_ENCRYPTION_KEY."
             ),
@@ -182,15 +174,15 @@ def create_real_ethereum_wallet():
 
     account = Account.create()
 
-    address = Web3.to_checksum_address(
-        account.address
+    address = (
+        Web3.to_checksum_address(
+            account.address
+        )
     )
-
-    private_key = account.key.hex()
 
     return (
         address,
-        private_key,
+        account.key.hex(),
     )
 
 
@@ -198,35 +190,33 @@ def encrypt_private_key(
     private_key: str,
 ) -> str:
 
-    fernet = get_wallet_fernet()
-
-    encrypted = fernet.encrypt(
-        private_key.encode()
+    return (
+        get_wallet_fernet()
+        .encrypt(
+            private_key.encode()
+        )
+        .decode()
     )
-
-    return encrypted.decode()
 
 
 def decrypt_private_key(
     encrypted_private_key: str,
 ) -> str:
 
-    fernet = get_wallet_fernet()
-
     try:
 
-        decrypted = fernet.decrypt(
-            encrypted_private_key.encode()
+        return (
+            get_wallet_fernet()
+            .decrypt(
+                encrypted_private_key.encode()
+            )
+            .decode()
         )
-
-        return decrypted.decode()
 
     except InvalidToken as exc:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_500_INTERNAL_SERVER_ERROR
-            ),
+            status_code=500,
             detail=(
                 "Failed to decrypt "
                 "wallet private key."
@@ -235,7 +225,7 @@ def decrypt_private_key(
 
 
 # ============================================================
-# AUTHENTICATION
+# AUTH
 # ============================================================
 
 def get_current_user(
@@ -259,9 +249,7 @@ def get_current_user(
 
         if not user_id:
 
-            raise ValueError(
-                "Missing subject"
-            )
+            raise ValueError()
 
         user_id = int(
             user_id
@@ -273,9 +261,7 @@ def get_current_user(
     ):
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_401_UNAUTHORIZED
-            ),
+            status_code=401,
             detail=(
                 "Invalid or expired token."
             ),
@@ -295,12 +281,8 @@ def get_current_user(
     if not user:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_401_UNAUTHORIZED
-            ),
-            detail=(
-                "User not found."
-            ),
+            status_code=401,
+            detail="User not found.",
             headers={
                 "WWW-Authenticate": "Bearer"
             },
@@ -309,9 +291,7 @@ def get_current_user(
     if not user.is_active:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_403_FORBIDDEN
-            ),
+            status_code=403,
             detail=(
                 "User account is inactive."
             ),
@@ -329,19 +309,15 @@ def get_current_admin(
     if not current_user.is_admin:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_403_FORBIDDEN
-            ),
-            detail=(
-                "Admin access required."
-            ),
+            status_code=403,
+            detail="Admin access required.",
         )
 
     return current_user
 
 
 # ============================================================
-# BLOCKCHAIN SCANNER
+# BLOCKCHAIN SCANNER LOOP
 # ============================================================
 
 async def blockchain_scanner_loop():
@@ -383,96 +359,121 @@ async def blockchain_scanner_loop():
 
 
 # ============================================================
-# TELEGRAM BOT LOOP
+# TELEGRAM SUPERVISOR
 # ============================================================
 
 async def telegram_bot_loop():
 
     global telegram_application
 
-    logger.info(
-        "Starting Edaaa Telegram bot..."
-    )
+    retry_delay = 10
 
-    try:
+    while True:
 
-        telegram_application = (
-            create_telegram_application()
-        )
+        try:
 
-        await telegram_application.initialize()
-
-        await telegram_application.start()
-
-        if telegram_application.updater is None:
-
-            raise RuntimeError(
-                "Telegram updater is not available."
+            logger.info(
+                "Starting Edaaa Telegram bot..."
             )
 
-        await telegram_application.updater.start_polling()
-
-        logger.info(
-            "Edaaa Telegram bot started successfully."
-        )
-
-        while True:
-
-            await asyncio.sleep(
-                3600
+            telegram_application = (
+                create_telegram_application()
             )
 
-    except asyncio.CancelledError:
+            await telegram_application.initialize()
 
-        logger.info(
-            "Telegram bot task cancelled."
+            await telegram_application.start()
+
+            if (
+                telegram_application.updater
+                is None
+            ):
+
+                raise RuntimeError(
+                    "Telegram updater is not available."
+                )
+
+            await (
+                telegram_application
+                .updater
+                .start_polling(
+                    drop_pending_updates=False,
+                )
+            )
+
+            logger.info(
+                "Edaaa Telegram bot started successfully."
+            )
+
+            while True:
+
+                await asyncio.sleep(
+                    3600
+                )
+
+        except asyncio.CancelledError:
+
+            raise
+
+        except Exception:
+
+            logger.exception(
+                "Telegram bot crashed. "
+                "Restarting automatically."
+            )
+
+        finally:
+
+            if telegram_application:
+
+                try:
+
+                    if (
+                        telegram_application.updater
+                    ):
+
+                        await (
+                            telegram_application
+                            .updater
+                            .stop()
+                        )
+
+                except Exception:
+
+                    logger.exception(
+                        "Failed to stop Telegram updater."
+                    )
+
+                try:
+
+                    await (
+                        telegram_application.stop()
+                    )
+
+                except Exception:
+
+                    logger.exception(
+                        "Failed to stop Telegram application."
+                    )
+
+                try:
+
+                    await (
+                        telegram_application
+                        .shutdown()
+                    )
+
+                except Exception:
+
+                    logger.exception(
+                        "Failed to shutdown Telegram application."
+                    )
+
+                telegram_application = None
+
+        await asyncio.sleep(
+            retry_delay
         )
-
-        raise
-
-    except Exception:
-
-        logger.exception(
-            "Telegram bot crashed."
-        )
-
-    finally:
-
-        if telegram_application:
-
-            try:
-
-                if telegram_application.updater:
-
-                    await telegram_application.updater.stop()
-
-            except Exception:
-
-                logger.exception(
-                    "Failed to stop Telegram updater."
-                )
-
-            try:
-
-                await telegram_application.stop()
-
-            except Exception:
-
-                logger.exception(
-                    "Failed to stop Telegram application."
-                )
-
-            try:
-
-                await telegram_application.shutdown()
-
-            except Exception:
-
-                logger.exception(
-                    "Failed to shutdown Telegram application."
-                )
-
-            telegram_application = None
 
 
 # ============================================================
@@ -488,26 +489,10 @@ async def startup():
     global telegram_bot_task
 
     logger.info(
-        "=================================================="
-    )
-
-    logger.info(
         "Edaaa Wallet API startup started."
     )
 
-    logger.info(
-        "=================================================="
-    )
-
-    # --------------------------------------------------------
-    # DATABASE
-    # --------------------------------------------------------
-
     try:
-
-        logger.info(
-            "Initializing database..."
-        )
 
         await asyncio.to_thread(
             init_database
@@ -523,55 +508,27 @@ async def startup():
             "Database initialization failed."
         )
 
-        logger.warning(
-            "Continuing API startup despite database error."
+    blockchain_scanner_task = (
+        asyncio.create_task(
+            blockchain_scanner_loop()
         )
+    )
 
-    # --------------------------------------------------------
-    # BLOCKCHAIN SCANNER
-    # --------------------------------------------------------
+    logger.info(
+        "Blockchain scanner task created."
+    )
 
-    try:
+    if settings.TELEGRAM_BOT_TOKEN:
 
-        blockchain_scanner_task = (
+        telegram_bot_task = (
             asyncio.create_task(
-                blockchain_scanner_loop()
+                telegram_bot_loop()
             )
         )
 
         logger.info(
-            "Blockchain scanner task created."
+            "Telegram supervisor task created."
         )
-
-    except Exception:
-
-        logger.exception(
-            "Failed to create blockchain scanner task."
-        )
-
-    # --------------------------------------------------------
-    # TELEGRAM BOT
-    # --------------------------------------------------------
-
-    if settings.TELEGRAM_BOT_TOKEN:
-
-        try:
-
-            telegram_bot_task = (
-                asyncio.create_task(
-                    telegram_bot_loop()
-                )
-            )
-
-            logger.info(
-                "Telegram bot task created."
-            )
-
-        except Exception:
-
-            logger.exception(
-                "Failed to create Telegram bot task."
-            )
 
     else:
 
@@ -579,20 +536,8 @@ async def startup():
             "TELEGRAM_BOT_TOKEN is not configured."
         )
 
-    # --------------------------------------------------------
-    # API READY
-    # --------------------------------------------------------
-
-    logger.info(
-        "=================================================="
-    )
-
     logger.info(
         "Edaaa Wallet API is READY."
-    )
-
-    logger.info(
-        "=================================================="
     )
 
 
@@ -612,10 +557,6 @@ async def shutdown():
         "Edaaa Wallet API shutdown started."
     )
 
-    # --------------------------------------------------------
-    # STOP BLOCKCHAIN SCANNER
-    # --------------------------------------------------------
-
     if blockchain_scanner_task:
 
         blockchain_scanner_task.cancel()
@@ -629,10 +570,6 @@ async def shutdown():
             pass
 
         blockchain_scanner_task = None
-
-    # --------------------------------------------------------
-    # STOP TELEGRAM BOT
-    # --------------------------------------------------------
 
     if telegram_bot_task:
 
@@ -665,11 +602,17 @@ def root():
         "message": (
             "Edaaa Wallet API is running"
         ),
-        "version": "0.9.0",
+        "version": "1.0.0",
         "telegram": bool(
             settings.TELEGRAM_BOT_TOKEN
         ),
     }
+
+
+@app.head("/")
+def root_head():
+
+    return None
 
 
 # ============================================================
@@ -710,15 +653,16 @@ def blockchain_status():
 
     web3 = Web3(
         Web3.HTTPProvider(
-            settings.ETH_RPC_URL
+            settings.ETH_RPC_URL,
+            request_kwargs={
+                "timeout": 30,
+            },
         )
     )
 
     try:
 
-        connected = web3.is_connected()
-
-        if not connected:
+        if not web3.is_connected():
 
             raise HTTPException(
                 status_code=503,
@@ -727,15 +671,15 @@ def blockchain_status():
                 ),
             )
 
-        chain_id = web3.eth.chain_id
-
-        block_number = web3.eth.block_number
-
         return {
             "connected": True,
             "network": settings.ETH_NETWORK,
-            "chain_id": chain_id,
-            "latest_block": block_number,
+            "chain_id": (
+                web3.eth.chain_id
+            ),
+            "latest_block": (
+                web3.eth.block_number
+            ),
         }
 
     except HTTPException:
@@ -821,9 +765,7 @@ def admin_blockchain_sync(
     except Exception as exc:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_503_SERVICE_UNAVAILABLE
-            ),
+            status_code=503,
             detail=(
                 "Blockchain sync failed: "
                 f"{str(exc)}"
@@ -838,7 +780,7 @@ def admin_blockchain_sync(
 @app.post(
     "/register",
     response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED,
+    status_code=201,
 )
 def register(
     data: RegisterRequest,
@@ -858,9 +800,7 @@ def register(
     if existing_user:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_409_CONFLICT
-            ),
+            status_code=409,
             detail=(
                 "A user with this email "
                 "already exists."
@@ -878,7 +818,6 @@ def register(
     )
 
     db.add(user)
-
     db.flush()
 
     address, private_key = (
@@ -892,39 +831,34 @@ def register(
     )
 
     db.add(wallet)
-
     db.flush()
 
-    encrypted_private_key = (
-        encrypt_private_key(
-            private_key
+    db.add(
+        WalletKey(
+            wallet_id=wallet.id,
+            encrypted_private_key=(
+                encrypt_private_key(
+                    private_key
+                )
+            ),
         )
     )
 
-    wallet_key = WalletKey(
-        wallet_id=wallet.id,
-        encrypted_private_key=(
-            encrypted_private_key
-        ),
+    db.add(
+        Balance(
+            wallet_id=wallet.id,
+            asset="USDT",
+            amount=Decimal("0"),
+        )
     )
 
-    db.add(wallet_key)
-
-    usdt_balance = Balance(
-        wallet_id=wallet.id,
-        asset="USDT",
-        amount=Decimal("0"),
+    db.add(
+        Balance(
+            wallet_id=wallet.id,
+            asset="ETH",
+            amount=Decimal("0"),
+        )
     )
-
-    eth_balance = Balance(
-        wallet_id=wallet.id,
-        asset="ETH",
-        amount=Decimal("0"),
-    )
-
-    db.add(usdt_balance)
-
-    db.add(eth_balance)
 
     try:
 
@@ -937,9 +871,7 @@ def register(
         db.rollback()
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_500_INTERNAL_SERVER_ERROR
-            ),
+            status_code=500,
             detail=(
                 "Failed to create "
                 "user wallet."
@@ -975,9 +907,7 @@ def login(
     if not user:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_401_UNAUTHORIZED
-            ),
+            status_code=401,
             detail=(
                 "Invalid email or password."
             ),
@@ -989,9 +919,7 @@ def login(
     ):
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_401_UNAUTHORIZED
-            ),
+            status_code=401,
             detail=(
                 "Invalid email or password."
             ),
@@ -1000,24 +928,20 @@ def login(
     if not user.is_active:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_403_FORBIDDEN
-            ),
+            status_code=403,
             detail=(
                 "User account is inactive."
             ),
         )
 
-    token = create_access_token(
-        {
-            "sub": str(
-                user.id
-            )
-        }
-    )
-
     return {
-        "access_token": token,
+        "access_token": create_access_token(
+            {
+                "sub": str(
+                    user.id
+                )
+            }
+        ),
         "token_type": "bearer",
     }
 
@@ -1062,18 +986,17 @@ def wallet(
             Wallet.user_id
             == current_user.id
         )
+        .order_by(
+            Wallet.id.asc()
+        )
         .first()
     )
 
     if not wallet:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
-            detail=(
-                "Wallet not found."
-            ),
+            status_code=404,
+            detail="Wallet not found.",
         )
 
     return wallet
@@ -1102,25 +1025,23 @@ def wallet_balance(
             Wallet.user_id
             == current_user.id
         )
+        .order_by(
+            Wallet.id.asc()
+        )
         .first()
     )
 
     if not wallet:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
-            detail=(
-                "Wallet not found."
-            ),
+            status_code=404,
+            detail="Wallet not found.",
         )
 
     balance = (
         db.query(Balance)
         .filter(
-            Balance.wallet_id
-            == wallet.id,
+            Balance.wallet_id == wallet.id,
             Balance.asset == "USDT",
         )
         .first()
@@ -1129,12 +1050,8 @@ def wallet_balance(
     if not balance:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
-            detail=(
-                "USDT balance not found."
-            ),
+            status_code=404,
+            detail="USDT balance not found.",
         )
 
     return balance
@@ -1165,21 +1082,20 @@ def wallet_transactions(
             Wallet.user_id
             == current_user.id
         )
+        .order_by(
+            Wallet.id.asc()
+        )
         .first()
     )
 
     if not wallet:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
-            detail=(
-                "Wallet not found."
-            ),
+            status_code=404,
+            detail="Wallet not found.",
         )
 
-    transactions = (
+    return (
         db.query(Transaction)
         .filter(
             Transaction.wallet_id
@@ -1191,11 +1107,9 @@ def wallet_transactions(
         .all()
     )
 
-    return transactions
-
 
 # ============================================================
-# ETHEREUM BALANCE
+# ETH BALANCE
 # ============================================================
 
 @app.get(
@@ -1210,22 +1124,14 @@ def ethereum_balance(
     ),
 ):
 
-    if not settings.ETH_RPC_URL:
-
-        raise HTTPException(
-            status_code=(
-                status.HTTP_503_SERVICE_UNAVAILABLE
-            ),
-            detail=(
-                "ETH_RPC_URL is not configured."
-            ),
-        )
-
     wallet = (
         db.query(Wallet)
         .filter(
             Wallet.user_id
             == current_user.id
+        )
+        .order_by(
+            Wallet.id.asc()
         )
         .first()
     )
@@ -1233,48 +1139,15 @@ def ethereum_balance(
     if not wallet:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
-            detail=(
-                "Wallet not found."
-            ),
+            status_code=404,
+            detail="Wallet not found.",
         )
 
-    if not Web3.is_address(
-        wallet.address
-    ):
-
-        raise HTTPException(
-            status_code=(
-                status.HTTP_400_BAD_REQUEST
-            ),
-            detail=(
-                "Wallet has an invalid "
-                "Ethereum address."
-            ),
-        )
-
-    web3 = Web3(
-        Web3.HTTPProvider(
-            settings.ETH_RPC_URL
-        )
-    )
+    web3 = get_web3()
 
     try:
 
-        if not web3.is_connected():
-
-            raise HTTPException(
-                status_code=(
-                    status.HTTP_503_SERVICE_UNAVAILABLE
-                ),
-                detail=(
-                    "Ethereum RPC connection failed."
-                ),
-            )
-
-        checksum_address = (
+        address = (
             Web3.to_checksum_address(
                 wallet.address
             )
@@ -1282,41 +1155,32 @@ def ethereum_balance(
 
         balance_wei = (
             web3.eth.get_balance(
-                checksum_address
-            )
-        )
-
-        balance_eth = (
-            Web3.from_wei(
-                balance_wei,
-                "ether",
+                address
             )
         )
 
         return {
-            "address": checksum_address,
-            "network": settings.ETH_NETWORK,
+            "address": address,
+            "network": (
+                settings.ETH_NETWORK
+            ),
             "asset": "ETH",
             "balance": str(
-                balance_eth
+                Web3.from_wei(
+                    balance_wei,
+                    "ether",
+                )
             ),
             "balance_wei": balance_wei,
         }
 
-    except HTTPException:
-
-        raise
-
     except Exception as exc:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_503_SERVICE_UNAVAILABLE
-            ),
+            status_code=503,
             detail=(
                 "Failed to read "
-                "Ethereum balance: "
-                f"{str(exc)}"
+                f"Ethereum balance: {str(exc)}"
             ),
         )
 
@@ -1343,18 +1207,17 @@ def wallet_key_status(
             Wallet.user_id
             == current_user.id
         )
+        .order_by(
+            Wallet.id.asc()
+        )
         .first()
     )
 
     if not wallet:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
-            detail=(
-                "Wallet not found."
-            ),
+            status_code=404,
+            detail="Wallet not found.",
         )
 
     wallet_key = (
@@ -1378,7 +1241,7 @@ def wallet_key_status(
 
 
 # ============================================================
-# SEND ETH
+# SEND ETH API
 # ============================================================
 
 @app.post(
@@ -1401,34 +1264,17 @@ def send_eth(
             Wallet.user_id
             == current_user.id
         )
+        .order_by(
+            Wallet.id.asc()
+        )
         .first()
     )
 
     if not wallet:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
-            detail=(
-                "Wallet not found."
-            ),
-        )
-
-    if (
-        wallet.network
-        != settings.ETH_NETWORK
-    ):
-
-        raise HTTPException(
-            status_code=(
-                status.HTTP_400_BAD_REQUEST
-            ),
-            detail=(
-                "Wallet network does not "
-                "match configured "
-                "Ethereum network."
-            ),
+            status_code=404,
+            detail="Wallet not found.",
         )
 
     to_address = (
@@ -1445,30 +1291,48 @@ def send_eth(
     ):
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_400_BAD_REQUEST
-            ),
+            status_code=400,
             detail=(
                 "Cannot send ETH to "
                 "the same wallet."
             ),
         )
 
-    web3 = get_web3()
-
-    private_key = (
-        get_wallet_private_key(
-            wallet=wallet,
-            db=db,
-            decrypt_private_key=(
-                decrypt_private_key
-            ),
-        )
+    transaction_record = Transaction(
+        wallet_id=wallet.id,
+        type="withdraw",
+        asset="ETH",
+        amount=data.amount,
+        status="broadcasting",
+        tx_hash=None,
     )
+
+    db.add(
+        transaction_record
+    )
+
+    db.commit()
+    db.refresh(
+        transaction_record
+    )
+
+    private_key = None
 
     try:
 
-        transaction = (
+        web3 = get_web3()
+
+        private_key = (
+            get_wallet_private_key(
+                wallet=wallet,
+                db=db,
+                decrypt_private_key=(
+                    decrypt_private_key
+                ),
+            )
+        )
+
+        transaction_data = (
             create_eth_transaction(
                 web3=web3,
                 wallet=wallet,
@@ -1482,59 +1346,52 @@ def send_eth(
             sign_and_send_eth_transaction(
                 web3=web3,
                 private_key=private_key,
-                transaction=transaction,
+                transaction=transaction_data,
             )
         )
+
+        transaction_record.tx_hash = (
+            tx_hash
+        )
+
+        transaction_record.status = (
+            "pending"
+        )
+
+        db.commit()
+
+        db.refresh(
+            transaction_record
+        )
+
+    except Exception:
+
+        transaction_record.status = (
+            "failed"
+        )
+
+        db.commit()
+
+        raise
 
     finally:
 
         private_key = None
 
-    send_transaction = SendTransaction(
-        wallet_id=wallet.id,
-        asset="ETH",
-        to_address=to_address,
-        amount=data.amount,
-        tx_hash=tx_hash,
-        status="pending",
-    )
-
-    db.add(
-        send_transaction
-    )
-
-    try:
-
-        db.commit()
-
-        db.refresh(
-            send_transaction
-        )
-
-    except Exception:
-
-        db.rollback()
-
-        raise HTTPException(
-            status_code=(
-                status.HTTP_500_INTERNAL_SERVER_ERROR
-            ),
-            detail=(
-                "Transaction was broadcast "
-                "but could not be saved."
-            ),
-        )
-
     return {
-        "id": send_transaction.id,
+        "id": transaction_record.id,
         "asset": "ETH",
         "from_address": wallet.address,
         "to_address": to_address,
         "amount": str(
-            send_transaction.amount
+            transaction_record.amount
         ),
-        "tx_hash": send_transaction.tx_hash,
-        "status": send_transaction.status,
+        "tx_hash": (
+            transaction_record.tx_hash
+        ),
+        "status": (
+            transaction_record.status
+        ),
     }
 
 
@@ -1559,7 +1416,8 @@ def admin_deposit(
     user = (
         db.query(User)
         .filter(
-            User.id == data.user_id
+            User.id
+            == data.user_id
         )
         .first()
     )
@@ -1567,18 +1425,18 @@ def admin_deposit(
     if not user:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
-            detail=(
-                "User not found."
-            ),
+            status_code=404,
+            detail="User not found.",
         )
 
     wallet = (
         db.query(Wallet)
         .filter(
-            Wallet.user_id == user.id
+            Wallet.user_id
+            == user.id
+        )
+        .order_by(
+            Wallet.id.asc()
         )
         .first()
     )
@@ -1586,18 +1444,15 @@ def admin_deposit(
     if not wallet:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
-            detail=(
-                "Wallet not found."
-            ),
+            status_code=404,
+            detail="Wallet not found.",
         )
 
     balance = (
         db.query(Balance)
         .filter(
-            Balance.wallet_id == wallet.id,
+            Balance.wallet_id
+            == wallet.id,
             Balance.asset == "USDT",
         )
         .first()
@@ -1606,30 +1461,26 @@ def admin_deposit(
     if not balance:
 
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
-            detail=(
-                "USDT balance not found."
-            ),
+            status_code=404,
+            detail="USDT balance not found.",
         )
-
-    amount = Decimal(
-        data.amount
-    )
 
     balance.amount = (
         Decimal(
             balance.amount
         )
-        + amount
+        + Decimal(
+            data.amount
+        )
     )
 
     transaction = Transaction(
         wallet_id=wallet.id,
         type="deposit",
         asset="USDT",
-        amount=amount,
+        amount=Decimal(
+            data.amount
+        ),
         status="completed",
         tx_hash=None,
     )
@@ -1638,25 +1489,9 @@ def admin_deposit(
         transaction
     )
 
-    try:
-
-        db.commit()
-
-        db.refresh(
-            transaction
-        )
-
-    except Exception:
-
-        db.rollback()
-
-        raise HTTPException(
-            status_code=(
-                status.HTTP_500_INTERNAL_SERVER_ERROR
-            ),
-            detail=(
-                "Failed to process deposit."
-            ),
-        )
+    db.commit()
+    db.refresh(
+        transaction
+    )
 
     return transaction
