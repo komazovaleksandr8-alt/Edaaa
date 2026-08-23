@@ -2,11 +2,8 @@ from sqlalchemy import inspect, text
 
 from app.database import Base, engine
 
-# ============================================================
-# MODELS
-# ============================================================
-
 from app import models
+from app import support_models
 
 from app.wallet_models import Wallet
 from app.balance_models import Balance
@@ -15,41 +12,15 @@ from app.wallet_key_models import WalletKey
 from app.send_models import SendTransaction
 from app.blockchain_state_models import BlockchainState
 
-# Support
-from app.support_models import (
-    SupportTicket,
-    SupportMessage,
-)
-
 
 def init_database():
-    """
-    Создаёт все таблицы Edaaa.
-
-    Base.metadata.create_all()
-    создаёт только отсутствующие таблицы
-    и не удаляет существующие данные.
-    """
-
-    # ========================================================
-    # CREATE TABLES
-    # ========================================================
-
     Base.metadata.create_all(
         bind=engine
     )
 
-    # ========================================================
-    # INSPECT DATABASE
-    # ========================================================
-
     inspector = inspect(engine)
 
     tables = inspector.get_table_names()
-
-    # ========================================================
-    # USERS
-    # ========================================================
 
     if "users" not in tables:
         return
@@ -61,18 +32,9 @@ def init_database():
         )
     }
 
-    # ========================================================
-    # MIGRATIONS
-    # ========================================================
-
     with engine.begin() as connection:
 
-        # ----------------------------------------------------
-        # TELEGRAM ID
-        # ----------------------------------------------------
-
         if "telegram_id" not in columns:
-
             connection.execute(
                 text(
                     """
@@ -83,12 +45,7 @@ def init_database():
                 )
             )
 
-        # ----------------------------------------------------
-        # TELEGRAM USERNAME
-        # ----------------------------------------------------
-
         if "telegram_username" not in columns:
-
             connection.execute(
                 text(
                     """
@@ -99,12 +56,7 @@ def init_database():
                 )
             )
 
-        # ----------------------------------------------------
-        # UNIQUE TELEGRAM INDEX
-        # ----------------------------------------------------
-
         try:
-
             connection.execute(
                 text(
                     """
@@ -120,10 +72,5 @@ def init_database():
             pass
 
 
-# ============================================================
-# DIRECT EXECUTION
-# ============================================================
-
 if __name__ == "__main__":
-
     init_database()
