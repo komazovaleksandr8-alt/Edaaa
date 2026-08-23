@@ -11,7 +11,6 @@ from fastapi import (
     Depends,
     FastAPI,
     HTTPException,
-    status,
 )
 
 from fastapi.middleware.cors import (
@@ -68,10 +67,6 @@ from app.blockchain_scanner import (
     scan_once,
 )
 
-from app.send_models import (
-    SendTransaction,
-)
-
 from app.send_schemas import (
     SendETHRequest,
     SendETHResponse,
@@ -90,6 +85,10 @@ from app.telegram_bot import (
 )
 
 
+# ============================================================
+# LOGGING
+# ============================================================
+
 logging.basicConfig(
     level=logging.INFO,
 )
@@ -98,6 +97,10 @@ logger = logging.getLogger(
     "edaaa"
 )
 
+
+# ============================================================
+# FASTAPI
+# ============================================================
 
 app = FastAPI(
     title="Edaaa Wallet",
@@ -118,6 +121,10 @@ app.add_middleware(
 security = HTTPBearer()
 
 
+# ============================================================
+# ADMIN REQUESTS
+# ============================================================
+
 class AdminDepositRequest(BaseModel):
 
     user_id: int = Field(
@@ -128,6 +135,10 @@ class AdminDepositRequest(BaseModel):
         gt=0
     )
 
+
+# ============================================================
+# GLOBAL TASKS
+# ============================================================
 
 blockchain_scanner_task = None
 
@@ -222,6 +233,57 @@ def decrypt_private_key(
                 "wallet private key."
             ),
         ) from exc
+
+
+# ============================================================
+# DATABASE VALIDATION
+# ============================================================
+
+def validate_database_configuration():
+
+    database_url = (
+        settings.DATABASE_URL
+        or ""
+    ).strip()
+
+    if not database_url:
+
+        raise RuntimeError(
+            "DATABASE_URL is not configured. "
+            "Edaaa requires a persistent PostgreSQL "
+            "database in production."
+        )
+
+    if database_url.startswith(
+        "sqlite:///"
+    ):
+
+        raise RuntimeError(
+            "SQLite is not allowed in production. "
+            "Configure DATABASE_URL with the "
+            "Render PostgreSQL database."
+        )
+
+    if not (
+        database_url.startswith(
+            "postgresql://"
+        )
+        or database_url.startswith(
+            "postgresql+psycopg2://"
+        )
+        or database_url.startswith(
+            "postgresql+asyncpg://"
+        )
+    ):
+
+        raise RuntimeError(
+            "Unsupported DATABASE_URL. "
+            "Edaaa production requires PostgreSQL."
+        )
+
+    logger.info(
+        "Persistent PostgreSQL database configuration detected."
+    )
 
 
 # ============================================================
@@ -492,21 +554,36 @@ async def startup():
         "Edaaa Wallet API startup started."
     )
 
+    # --------------------------------------------------------
+    # DATABASE
+    # --------------------------------------------------------
+
     try:
+
+        validate_database_configuration()
 
         await asyncio.to_thread(
             init_database
         )
 
         logger.info(
-            "Database initialization completed."
+            "Database initialization completed successfully."
         )
 
     except Exception:
 
         logger.exception(
-            "Database initialization failed."
+            "CRITICAL: Database initialization failed."
         )
+
+        # Очень важно:
+        # приложение НЕ должно продолжать работу,
+        # если постоянная БД недоступна.
+        raise
+
+    # --------------------------------------------------------
+    # BLOCKCHAIN SCANNER
+    # --------------------------------------------------------
 
     blockchain_scanner_task = (
         asyncio.create_task(
@@ -517,6 +594,10 @@ async def startup():
     logger.info(
         "Blockchain scanner task created."
     )
+
+    # --------------------------------------------------------
+    # TELEGRAM BOT
+    # --------------------------------------------------------
 
     if settings.TELEGRAM_BOT_TOKEN:
 
@@ -557,6 +638,10 @@ async def shutdown():
         "Edaaa Wallet API shutdown started."
     )
 
+    # --------------------------------------------------------
+    # BLOCKCHAIN SCANNER
+    # --------------------------------------------------------
+
     if blockchain_scanner_task:
 
         blockchain_scanner_task.cancel()
@@ -570,6 +655,10 @@ async def shutdown():
             pass
 
         blockchain_scanner_task = None
+
+    # --------------------------------------------------------
+    # TELEGRAM
+    # --------------------------------------------------------
 
     if telegram_bot_task:
 
