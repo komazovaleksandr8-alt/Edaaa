@@ -8,11 +8,15 @@ from app.database import SessionLocal
 from app.send_models import SendTransaction
 
 
-logger = logging.getLogger("edaaa.send_scanner")
+logger = logging.getLogger(
+    "edaaa.send_scanner"
+)
 
 
 def get_web3() -> Web3:
+
     if not settings.ETH_RPC_URL:
+
         raise RuntimeError(
             "ETH_RPC_URL is not configured."
         )
@@ -27,6 +31,7 @@ def get_web3() -> Web3:
     )
 
     if not web3.is_connected():
+
         raise RuntimeError(
             "Ethereum RPC connection failed."
         )
@@ -36,11 +41,12 @@ def get_web3() -> Web3:
 
 def scan_pending_send_transactions() -> dict:
     """
-    Проверяет pending ETH-транзакции.
+    Проверяет все исходящие ETH-транзакции
+    со статусом pending.
 
-    Если blockchain уже дал receipt:
-        status == 1 -> completed
-        status == 0 -> failed
+    Blockchain receipt:
+        status=1 -> completed
+        status=0 -> failed
     """
 
     web3 = get_web3()
@@ -48,11 +54,16 @@ def scan_pending_send_transactions() -> dict:
     db: Session = SessionLocal()
 
     try:
+
         transactions = (
-            db.query(SendTransaction)
+            db.query(
+                SendTransaction
+            )
             .filter(
-                SendTransaction.status == "pending",
-                SendTransaction.tx_hash.isnot(None),
+                SendTransaction.status
+                == "pending",
+                SendTransaction.tx_hash
+                .isnot(None),
             )
             .all()
         )
@@ -62,28 +73,43 @@ def scan_pending_send_transactions() -> dict:
         failed = 0
 
         for transaction in transactions:
+
             checked += 1
 
             try:
-                tx_hash = transaction.tx_hash
 
-                receipt = web3.eth.get_transaction_receipt(
-                    tx_hash
+                tx_hash = (
+                    transaction.tx_hash
+                )
+
+                receipt = (
+                    web3.eth
+                    .get_transaction_receipt(
+                        tx_hash
+                    )
                 )
 
                 if receipt is None:
                     continue
 
-                receipt_status = receipt.get(
-                    "status"
+                receipt_status = (
+                    receipt.get(
+                        "status"
+                    )
                 )
 
-                block_number = receipt.get(
-                    "blockNumber"
+                block_number = (
+                    receipt.get(
+                        "blockNumber"
+                    )
                 )
 
                 if receipt_status == 1:
-                    transaction.status = "completed"
+
+                    transaction.status = (
+                        "completed"
+                    )
+
                     completed += 1
 
                     logger.info(
@@ -97,7 +123,11 @@ def scan_pending_send_transactions() -> dict:
                     )
 
                 elif receipt_status == 0:
-                    transaction.status = "failed"
+
+                    transaction.status = (
+                        "failed"
+                    )
+
                     failed += 1
 
                     logger.warning(
@@ -110,15 +140,15 @@ def scan_pending_send_transactions() -> dict:
                         block_number,
                     )
 
-            except Exception as exc:
-                logger.warning(
-                    "Failed to check send transaction | "
+            except Exception:
+
+                logger.exception(
+                    "Failed to check send "
+                    "transaction | "
                     "id=%s | "
-                    "tx=%s | "
-                    "error=%s",
+                    "tx=%s",
                     transaction.id,
                     transaction.tx_hash,
-                    exc,
                 )
 
         db.commit()
@@ -132,6 +162,7 @@ def scan_pending_send_transactions() -> dict:
         }
 
     except Exception:
+
         db.rollback()
 
         logger.exception(
@@ -141,4 +172,5 @@ def scan_pending_send_transactions() -> dict:
         raise
 
     finally:
+
         db.close()
