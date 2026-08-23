@@ -8,7 +8,6 @@ from app.balance_models import Balance
 from app.blockchain_state_models import BlockchainState
 from app.config import settings
 from app.database import SessionLocal
-from app.send_models import SendTransaction
 from app.transaction_models import Transaction
 from app.wallet_models import Wallet
 
@@ -18,20 +17,10 @@ logger = logging.getLogger(
 )
 
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-# Количество подтверждений, после которых
-# blockchain transaction считается подтверждённой.
 CONFIRMATIONS_REQUIRED = 3
 
-# При первой инициализации scanner
-# проверяет последние N блоков.
 INITIAL_LOOKBACK_BLOCKS = 100
 
-# Максимальное количество блоков
-# за один цикл сканирования.
 MAX_BLOCKS_PER_SCAN = 20
 
 
@@ -40,9 +29,6 @@ MAX_BLOCKS_PER_SCAN = 20
 # ============================================================
 
 def get_web3() -> Web3:
-    """
-    Создаёт подключение к Ethereum RPC.
-    """
 
     if not settings.ETH_RPC_URL:
 
@@ -76,12 +62,6 @@ def get_or_create_state(
     db: Session,
     latest_block: int,
 ) -> BlockchainState:
-    """
-    Получает состояние blockchain scanner.
-
-    При первом запуске scanner начинает
-    с последних INITIAL_LOOKBACK_BLOCKS блоков.
-    """
 
     state = (
         db.query(BlockchainState)
@@ -104,7 +84,9 @@ def get_or_create_state(
 
     state = BlockchainState(
         network=settings.ETH_NETWORK,
-        last_scanned_block=start_block - 1,
+        last_scanned_block=(
+            start_block - 1
+        ),
     )
 
     db.add(state)
@@ -134,13 +116,12 @@ def get_wallet_map(
     db: Session,
 ) -> dict[str, Wallet]:
     """
-    Загружает все Edaaa-кошельки текущей сети.
+    Сначала ищет кошельки текущей сети.
 
-    Формат:
-
-        {
-            "0xaddress": Wallet
-        }
+    Если таких нет, использует существующие Wallet
+    как legacy fallback. Это позволяет старым кошелькам,
+    созданным до фикса network, продолжить работать
+    на текущем Sepolia RPC.
     """
 
     wallets = (
@@ -151,6 +132,24 @@ def get_wallet_map(
         )
         .all()
     )
+
+    if not wallets:
+
+        legacy_wallets = (
+            db.query(Wallet)
+            .all()
+        )
+
+        if legacy_wallets:
+
+            logger.warning(
+                "No wallets found for configured network '%s'. "
+                "Using %s legacy wallet(s) as fallback.",
+                settings.ETH_NETWORK,
+                len(legacy_wallets),
+            )
+
+            wallets = legacy_wallets
 
     wallet_map: dict[str, Wallet] = {}
 
@@ -167,6 +166,18 @@ def get_wallet_map(
             wallet_map[
                 checksum_address.lower()
             ] = wallet
+
+            logger.info(
+                "Monitoring wallet | "
+                "id=%s | "
+                "user_id=%s | "
+                "address=%s | "
+                "network=%s",
+                wallet.id,
+                wallet.user_id,
+                checksum_address,
+                wallet.network,
+            )
 
         except Exception:
 
@@ -186,12 +197,6 @@ def get_or_create_eth_balance(
     db: Session,
     wallet: Wallet,
 ) -> Balance:
-    """
-    Получает ETH balance кошелька.
-
-    Если ETH balance отсутствует,
-    создаёт его с нулевым балансом.
-    """
 
     balance = (
         db.query(Balance)
@@ -221,17 +226,13 @@ def get_or_create_eth_balance(
 
 
 # ============================================================
-# DUPLICATE PROTECTION
+# TX DUPLICATE CHECK
 # ============================================================
 
 def transaction_already_processed(
     db: Session,
     tx_hash: str,
 ) -> bool:
-    """
-    Проверяет, был ли blockchain TX
-    уже записан в Transaction.
-    """
 
     transaction = (
         db.query(Transaction)
@@ -255,17 +256,6 @@ def process_transaction(
     wallet_map: dict[str, Wallet],
     latest_block: int,
 ) -> bool:
-    """
-    Проверяет одну Ethereum-транзакцию.
-
-    Обрабатываются только входящие ETH-транзакции
-    на кошельки Edaaa с необходимым количеством
-    подтверждений.
-    """
-
-    # --------------------------------------------------------
-    # RECIPIENT
-    # --------------------------------------------------------
 
     recipient_raw = tx.get(
         "to"
@@ -287,10 +277,6 @@ def process_transaction(
 
         return False
 
-    # --------------------------------------------------------
-    # EDAAA WALLET
-    # --------------------------------------------------------
-
     wallet = wallet_map.get(
         recipient.lower()
     )
@@ -298,10 +284,6 @@ def process_transaction(
     if not wallet:
 
         return False
-
-    # --------------------------------------------------------
-    # VALUE
-    # --------------------------------------------------------
 
     try:
 
@@ -315,19 +297,11 @@ def process_transaction(
         ValueError,
     ):
 
-        logger.warning(
-            "Invalid transaction value."
-        )
-
         return False
 
     if value_wei <= 0:
 
         return False
-
-    # --------------------------------------------------------
-    # TX HASH
-    # --------------------------------------------------------
 
     try:
 
@@ -348,19 +322,11 @@ def process_transaction(
 
     except Exception:
 
-        logger.warning(
-            "Unable to extract transaction hash."
-        )
-
         return False
 
     if not tx_hash:
 
         return False
-
-    # --------------------------------------------------------
-    # DUPLICATE CHECK
-    # --------------------------------------------------------
 
     if transaction_already_processed(
         db=db,
@@ -368,10 +334,6 @@ def process_transaction(
     ):
 
         return False
-
-    # --------------------------------------------------------
-    # BLOCK
-    # --------------------------------------------------------
 
     block_number = tx.get(
         "blockNumber"
@@ -394,10 +356,6 @@ def process_transaction(
 
         return False
 
-    # --------------------------------------------------------
-    # CONFIRMATIONS
-    # --------------------------------------------------------
-
     confirmations = (
         latest_block
         - block_number
@@ -411,38 +369,18 @@ def process_transaction(
 
         return False
 
-    # --------------------------------------------------------
-    # ETH AMOUNT
-    # --------------------------------------------------------
-
-    try:
-
-        amount_eth = Decimal(
-            str(
-                Web3.from_wei(
-                    value_wei,
-                    "ether",
-                )
+    amount_eth = Decimal(
+        str(
+            Web3.from_wei(
+                value_wei,
+                "ether",
             )
         )
-
-    except Exception:
-
-        logger.exception(
-            "Failed to convert ETH amount | "
-            "tx=%s",
-            tx_hash,
-        )
-
-        return False
+    )
 
     if amount_eth <= 0:
 
         return False
-
-    # --------------------------------------------------------
-    # BALANCE
-    # --------------------------------------------------------
 
     balance = (
         get_or_create_eth_balance(
@@ -464,10 +402,6 @@ def process_transaction(
         new_balance
     )
 
-    # --------------------------------------------------------
-    # TRANSACTION RECORD
-    # --------------------------------------------------------
-
     transaction = Transaction(
         wallet_id=wallet.id,
         type="deposit",
@@ -477,13 +411,7 @@ def process_transaction(
         tx_hash=tx_hash,
     )
 
-    db.add(
-        transaction
-    )
-
-    # --------------------------------------------------------
-    # LOG
-    # --------------------------------------------------------
+    db.add(transaction)
 
     logger.info(
         "=================================================="
@@ -536,67 +464,37 @@ def process_transaction(
 
 
 # ============================================================
-# PENDING OUTGOING TRANSACTIONS
+# PENDING OUTGOING
 # ============================================================
 
 def get_pending_send_transactions(
     db: Session,
-) -> list[SendTransaction]:
-    """
-    Возвращает все исходящие ETH-транзакции,
-    которые ещё находятся в pending.
-    """
+) -> list[Transaction]:
 
-    transactions = (
-        db.query(SendTransaction)
+    return (
+        db.query(Transaction)
         .filter(
-            SendTransaction.asset == "ETH",
-            SendTransaction.status == "pending",
-            SendTransaction.tx_hash.isnot(None),
+            Transaction.type == "withdraw",
+            Transaction.asset == "ETH",
+            Transaction.status == "pending",
+            Transaction.tx_hash.isnot(None),
         )
         .all()
     )
 
-    return transactions
-
-
-# ============================================================
-# PROCESS PENDING SEND
-# ============================================================
 
 def process_pending_send_transaction(
     db: Session,
     web3: Web3,
-    send_transaction: SendTransaction,
+    transaction: Transaction,
     latest_block: int,
 ) -> bool:
-    """
-    Проверяет исходящую ETH-транзакцию.
 
-    Возможные состояния:
-
-        pending
-            транзакция ещё не включена в блок
-
-        pending
-            транзакция включена, но мало confirmations
-
-        completed
-            транзакция успешно подтверждена
-
-        failed
-            blockchain receipt.status == 0
-    """
-
-    tx_hash = send_transaction.tx_hash
+    tx_hash = transaction.tx_hash
 
     if not tx_hash:
 
         return False
-
-    # --------------------------------------------------------
-    # GET RECEIPT
-    # --------------------------------------------------------
 
     try:
 
@@ -606,26 +504,13 @@ def process_pending_send_transaction(
             )
         )
 
-    except Exception as exc:
-
-        # TransactionNotFound / RPC error.
-        # В обоих случаях не меняем pending.
-        logger.info(
-            "Pending ETH transaction not mined yet | "
-            "tx=%s | error=%s",
-            tx_hash,
-            str(exc),
-        )
+    except Exception:
 
         return False
 
     if not receipt:
 
         return False
-
-    # --------------------------------------------------------
-    # RECEIPT BLOCK
-    # --------------------------------------------------------
 
     receipt_block = receipt.get(
         "blockNumber"
@@ -646,17 +531,7 @@ def process_pending_send_transaction(
         ValueError,
     ):
 
-        logger.warning(
-            "Invalid receipt block | "
-            "tx=%s",
-            tx_hash,
-        )
-
         return False
-
-    # --------------------------------------------------------
-    # RECEIPT STATUS
-    # --------------------------------------------------------
 
     receipt_status = receipt.get(
         "status"
@@ -673,43 +548,23 @@ def process_pending_send_transaction(
         ValueError,
     ):
 
-        receipt_status = 1
+        return False
 
     # --------------------------------------------------------
-    # FAILED TRANSACTION
+    # FAILED
     # --------------------------------------------------------
 
     if receipt_status == 0:
 
-        send_transaction.status = (
+        transaction.status = (
             "failed"
         )
 
-        logger.error(
-            "=================================================="
-        )
-
-        logger.error(
-            "ETH SEND FAILED"
-        )
-
-        logger.error(
-            "SendTransaction ID: %s",
-            send_transaction.id,
-        )
-
-        logger.error(
-            "TX Hash: %s",
+        logger.warning(
+            "ETH SEND FAILED | "
+            "id=%s | tx=%s",
+            transaction.id,
             tx_hash,
-        )
-
-        logger.error(
-            "Wallet ID: %s",
-            send_transaction.wallet_id,
-        )
-
-        logger.error(
-            "=================================================="
         )
 
         return True
@@ -730,25 +585,20 @@ def process_pending_send_transaction(
     ):
 
         logger.info(
-            "ETH send mined but waiting "
-            "for confirmations | "
+            "ETH send awaiting confirmations | "
+            "id=%s | "
             "tx=%s | "
-            "block=%s | "
             "confirmations=%s/%s",
+            transaction.id,
             tx_hash,
-            receipt_block,
             confirmations,
             CONFIRMATIONS_REQUIRED,
         )
 
         return False
 
-    # --------------------------------------------------------
-    # ALREADY COMPLETED
-    # --------------------------------------------------------
-
     if (
-        send_transaction.status
+        transaction.status
         == "completed"
     ):
 
@@ -762,27 +612,27 @@ def process_pending_send_transaction(
         db.query(Wallet)
         .filter(
             Wallet.id
-            == send_transaction.wallet_id
+            == transaction.wallet_id
         )
         .first()
     )
 
     if not wallet:
 
-        logger.error(
-            "Wallet not found for SendTransaction | "
-            "id=%s",
-            send_transaction.id,
+        transaction.status = (
+            "failed"
         )
 
-        send_transaction.status = (
-            "failed"
+        logger.error(
+            "Wallet not found for withdrawal | "
+            "transaction_id=%s",
+            transaction.id,
         )
 
         return True
 
     # --------------------------------------------------------
-    # INTERNAL ETH BALANCE
+    # INTERNAL BALANCE
     # --------------------------------------------------------
 
     balance = (
@@ -793,21 +643,17 @@ def process_pending_send_transaction(
     )
 
     amount = Decimal(
-        send_transaction.amount
+        transaction.amount
     )
 
     current_balance = Decimal(
         balance.amount
     )
 
-    # --------------------------------------------------------
-    # PROTECTION AGAINST NEGATIVE BALANCE
-    # --------------------------------------------------------
-
     if current_balance < amount:
 
         logger.error(
-            "ETH send confirmed on blockchain, "
+            "Withdrawal confirmed on blockchain "
             "but internal balance is insufficient | "
             "wallet=%s | "
             "balance=%s | "
@@ -819,42 +665,22 @@ def process_pending_send_transaction(
             tx_hash,
         )
 
-        # Мы НЕ помечаем failed,
-        # потому что blockchain transaction
-        # уже реально выполнена.
-
-        send_transaction.status = (
+        transaction.status = (
             "completed"
         )
 
         return True
 
-    # --------------------------------------------------------
-    # DEDUCT BALANCE
-    # --------------------------------------------------------
-
     old_balance = current_balance
 
-    new_balance = (
+    balance.amount = (
         current_balance
         - amount
     )
 
-    balance.amount = (
-        new_balance
-    )
-
-    # --------------------------------------------------------
-    # MARK COMPLETED
-    # --------------------------------------------------------
-
-    send_transaction.status = (
+    transaction.status = (
         "completed"
     )
-
-    # --------------------------------------------------------
-    # LOG
-    # --------------------------------------------------------
 
     logger.info(
         "=================================================="
@@ -865,8 +691,8 @@ def process_pending_send_transaction(
     )
 
     logger.info(
-        "SendTransaction ID: %s",
-        send_transaction.id,
+        "Transaction ID: %s",
+        transaction.id,
     )
 
     logger.info(
@@ -886,7 +712,7 @@ def process_pending_send_transaction(
 
     logger.info(
         "New internal balance: %s ETH",
-        new_balance,
+        balance.amount,
     )
 
     logger.info(
@@ -895,17 +721,8 @@ def process_pending_send_transaction(
     )
 
     logger.info(
-        "Receipt block: %s",
-        receipt_block,
-    )
-
-    logger.info(
         "Confirmations: %s",
         confirmations,
-    )
-
-    logger.info(
-        "Status: completed",
     )
 
     logger.info(
@@ -915,54 +732,25 @@ def process_pending_send_transaction(
     return True
 
 
-# ============================================================
-# PROCESS PENDING SENDS
-# ============================================================
-
 def process_pending_sends(
     db: Session,
     web3: Web3,
     latest_block: int,
 ) -> dict:
-    """
-    Проверяет все pending ETH withdrawals.
-    """
 
-    pending_transactions = (
+    transactions = (
         get_pending_send_transactions(
             db
         )
     )
 
-    if not pending_transactions:
-
-        return {
-            "checked": 0,
-            "completed": 0,
-            "failed": 0,
-        }
-
     checked = 0
     completed = 0
     failed = 0
 
-    logger.info(
-        "Checking pending ETH sends | "
-        "count=%s",
-        len(
-            pending_transactions
-        ),
-    )
-
-    for send_transaction in (
-        pending_transactions
-    ):
+    for transaction in transactions:
 
         checked += 1
-
-        old_status = (
-            send_transaction.status
-        )
 
         try:
 
@@ -970,26 +758,22 @@ def process_pending_sends(
                 process_pending_send_transaction(
                     db=db,
                     web3=web3,
-                    send_transaction=(
-                        send_transaction
-                    ),
-                    latest_block=(
-                        latest_block
-                    ),
+                    transaction=transaction,
+                    latest_block=latest_block,
                 )
             )
 
             if changed:
 
                 if (
-                    send_transaction.status
+                    transaction.status
                     == "completed"
                 ):
 
                     completed += 1
 
                 elif (
-                    send_transaction.status
+                    transaction.status
                     == "failed"
                 ):
 
@@ -1003,33 +787,11 @@ def process_pending_sends(
 
             logger.exception(
                 "Failed to process pending "
-                "ETH send | "
+                "withdrawal | "
                 "id=%s | "
                 "tx=%s",
-                send_transaction.id,
-                send_transaction.tx_hash,
-            )
-
-            # После rollback объект может быть
-            # expired, поэтому ничего с ним больше
-            # не делаем в этой итерации.
-
-            continue
-
-        if (
-            old_status
-            != send_transaction.status
-        ):
-
-            logger.info(
-                "Send transaction status changed | "
-                "id=%s | "
-                "tx=%s | "
-                "%s -> %s",
-                send_transaction.id,
-                send_transaction.tx_hash,
-                old_status,
-                send_transaction.status,
+                transaction.id,
+                transaction.tx_hash,
             )
 
     return {
@@ -1040,7 +802,7 @@ def process_pending_sends(
 
 
 # ============================================================
-# SCAN BLOCK
+# BLOCK
 # ============================================================
 
 def scan_block(
@@ -1050,12 +812,6 @@ def scan_block(
     wallet_map: dict[str, Wallet],
     latest_block: int,
 ) -> int:
-    """
-    Сканирует один Ethereum-блок.
-
-    Возвращает количество найденных
-    и зачисленных ETH-депозитов.
-    """
 
     logger.info(
         "Scanning block %s",
@@ -1069,12 +825,10 @@ def scan_block(
 
     processed = 0
 
-    transactions = block.get(
+    for tx in block.get(
         "transactions",
         [],
-    )
-
-    for tx in transactions:
+    ):
 
         try:
 
@@ -1103,13 +857,6 @@ def scan_block(
 # ============================================================
 
 def scan_once() -> dict:
-    """
-    Выполняет один цикл blockchain scanning.
-
-    1. Проверяет pending ETH sends.
-    2. Сканирует новые подтверждённые блоки.
-    3. Обрабатывает ETH deposits.
-    """
 
     web3 = get_web3()
 
@@ -1117,43 +864,18 @@ def scan_once() -> dict:
         web3.eth.block_number
     )
 
-    # --------------------------------------------------------
-    # CONFIRMED BLOCK
-    # --------------------------------------------------------
-
     confirmed_block = (
         latest_block
         - CONFIRMATIONS_REQUIRED
         + 1
     )
 
-    if confirmed_block < 0:
-
-        return {
-            "status": "waiting",
-            "network": (
-                settings.ETH_NETWORK
-            ),
-            "latest_block": (
-                latest_block
-            ),
-            "confirmed_block": (
-                confirmed_block
-            ),
-            "processed_transactions": 0,
-            "pending_sends": {
-                "checked": 0,
-                "completed": 0,
-                "failed": 0,
-            },
-        }
-
     db = SessionLocal()
 
     try:
 
         # ----------------------------------------------------
-        # PENDING SENDS
+        # OUTGOING
         # ----------------------------------------------------
 
         pending_send_result = (
@@ -1180,17 +902,13 @@ def scan_once() -> dict:
         # ----------------------------------------------------
 
         wallet_map = (
-            get_wallet_map(
-                db
-            )
+            get_wallet_map(db)
         )
 
         if not wallet_map:
 
-            logger.info(
-                "No Edaaa wallets found "
-                "for network %s.",
-                settings.ETH_NETWORK,
+            logger.warning(
+                "No Edaaa wallets found."
             )
 
         # ----------------------------------------------------
@@ -1202,7 +920,10 @@ def scan_once() -> dict:
             + 1
         )
 
-        if start_block > confirmed_block:
+        if (
+            start_block
+            > confirmed_block
+        ):
 
             return {
                 "status": "up_to_date",
@@ -1221,6 +942,9 @@ def scan_once() -> dict:
                 "processed_transactions": 0,
                 "pending_sends": (
                     pending_send_result
+                ),
+                "wallets_monitored": (
+                    len(wallet_map)
                 ),
             }
 
@@ -1283,7 +1007,7 @@ def scan_once() -> dict:
         )
 
         # ----------------------------------------------------
-        # SCAN BLOCKS
+        # BLOCKS
         # ----------------------------------------------------
 
         for block_number in range(
@@ -1309,8 +1033,6 @@ def scan_once() -> dict:
                     )
                 )
 
-                # State двигается только после
-                # успешного сканирования блока.
                 state.last_scanned_block = (
                     block_number
                 )
@@ -1326,14 +1048,7 @@ def scan_once() -> dict:
                     block_number,
                 )
 
-                # Останавливаемся.
-                # Неуспешный блок будет повторён
-                # следующим циклом.
                 break
-
-        # ----------------------------------------------------
-        # RESULT
-        # ----------------------------------------------------
 
         result = {
             "status": "completed",
@@ -1361,6 +1076,9 @@ def scan_once() -> dict:
             "pending_sends": (
                 pending_send_result
             ),
+            "wallets_monitored": (
+                len(wallet_map)
+            ),
         }
 
         logger.info(
@@ -1369,7 +1087,8 @@ def scan_once() -> dict:
             "processed_transactions=%s | "
             "pending_checked=%s | "
             "pending_completed=%s | "
-            "pending_failed=%s",
+            "pending_failed=%s | "
+            "wallets_monitored=%s",
             state.last_scanned_block,
             processed_transactions,
             pending_send_result[
@@ -1381,6 +1100,7 @@ def scan_once() -> dict:
             pending_send_result[
                 "failed"
             ],
+            len(wallet_map),
         )
 
         return result
