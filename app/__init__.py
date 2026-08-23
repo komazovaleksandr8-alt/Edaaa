@@ -22,54 +22,136 @@ def init_database():
 
     tables = inspector.get_table_names()
 
-    if "users" not in tables:
-        return
+    # --------------------------------------------------------
+    # USERS
+    # --------------------------------------------------------
 
-    columns = {
-        column["name"]
-        for column in inspector.get_columns(
-            "users"
-        )
-    }
+    if "users" in tables:
 
-    with engine.begin() as connection:
+        columns = {
+            column["name"]
+            for column in inspector.get_columns(
+                "users"
+            )
+        }
 
-        if "telegram_id" not in columns:
-            connection.execute(
+        with engine.begin() as connection:
+
+            if "telegram_id" not in columns:
+
+                connection.execute(
+                    text(
+                        """
+                        ALTER TABLE users
+                        ADD COLUMN telegram_id
+                        VARCHAR(64)
+                        """
+                    )
+                )
+
+            if "telegram_username" not in columns:
+
+                connection.execute(
+                    text(
+                        """
+                        ALTER TABLE users
+                        ADD COLUMN telegram_username
+                        VARCHAR(255)
+                        """
+                    )
+                )
+
+            try:
+
+                connection.execute(
+                    text(
+                        """
+                        CREATE UNIQUE INDEX
+                        IF NOT EXISTS
+                        ix_users_telegram_id
+                        ON users (telegram_id)
+                        """
+                    )
+                )
+
+            except Exception:
+                pass
+
+    # --------------------------------------------------------
+    # WALLETS
+    # --------------------------------------------------------
+
+    if "wallets" in tables:
+
+        with engine.begin() as connection:
+
+            # Проверяем наличие дублей user_id.
+            duplicate_users = connection.execute(
                 text(
                     """
-                    ALTER TABLE users
-                    ADD COLUMN telegram_id
-                    VARCHAR(64)
+                    SELECT user_id, COUNT(*) AS wallet_count
+                    FROM wallets
+                    GROUP BY user_id
+                    HAVING COUNT(*) > 1
                     """
                 )
-            )
+            ).fetchall()
 
-        if "telegram_username" not in columns:
-            connection.execute(
-                text(
-                    """
-                    ALTER TABLE users
-                    ADD COLUMN telegram_username
-                    VARCHAR(255)
-                    """
+            if duplicate_users:
+
+                print(
+                    "WARNING: duplicate wallets detected "
+                    "for some users. "
+                    "Unique wallet-per-user index "
+                    "was not created."
                 )
-            )
 
-        try:
-            connection.execute(
-                text(
-                    """
-                    CREATE UNIQUE INDEX
-                    IF NOT EXISTS
-                    ix_users_telegram_id
-                    ON users (telegram_id)
-                    """
+            else:
+
+                try:
+
+                    connection.execute(
+                        text(
+                            """
+                            CREATE UNIQUE INDEX
+                            IF NOT EXISTS
+                            ix_wallets_user_id_unique
+                            ON wallets (user_id)
+                            """
+                        )
+                    )
+
+                except Exception:
+
+                    pass
+
+    # --------------------------------------------------------
+    # BALANCES
+    # --------------------------------------------------------
+
+    if "balances" in tables:
+
+        with engine.begin() as connection:
+
+            try:
+
+                connection.execute(
+                    text(
+                        """
+                        CREATE UNIQUE INDEX
+                        IF NOT EXISTS
+                        ix_balances_wallet_asset_unique
+                        ON balances (
+                            wallet_id,
+                            asset
+                        )
+                        """
+                    )
                 )
-            )
 
-        except Exception:
-            pass
+            except Exception:
+
+                pass
 
 
 if __name__ == "__main__":
