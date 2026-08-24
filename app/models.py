@@ -14,13 +14,22 @@ from app.database import Base
 
 
 class User(Base):
+
     __tablename__ = "users"
+
+    # ========================================================
+    # ID
+    # ========================================================
 
     id = Column(
         Integer,
         primary_key=True,
         index=True,
     )
+
+    # ========================================================
+    # ACCOUNT
+    # ========================================================
 
     email = Column(
         String(255),
@@ -46,6 +55,10 @@ class User(Base):
         nullable=False,
     )
 
+    # ========================================================
+    # TELEGRAM
+    # ========================================================
+
     telegram_id = Column(
         String(64),
         unique=True,
@@ -56,7 +69,12 @@ class User(Base):
     telegram_username = Column(
         String(255),
         nullable=True,
+        index=True,
     )
+
+    # ========================================================
+    # CREATED
+    # ========================================================
 
     created_at = Column(
         DateTime(timezone=True),
@@ -75,7 +93,7 @@ class User(Base):
     )
 
     # ========================================================
-    # SUPPORT TICKETS
+    # SUPPORT
     # ========================================================
 
     support_tickets = relationship(
@@ -83,3 +101,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+
+
+# ============================================================
+# MODEL IMPORTS
+# ============================================================
+
+from app.wallet_models import Wallet
+from app.support_models import SupportTicket
