@@ -6,6 +6,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
+
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import User
+from app.config import settings
 
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,7 @@ def get_or_create_user(
     db = get_session()
 
     try:
+
         telegram_id = str(
             telegram_user.id
         )
@@ -56,6 +59,7 @@ def get_or_create_user(
         )
 
         if user:
+
             user.telegram_username = (
                 telegram_user.username
             )
@@ -66,22 +70,19 @@ def get_or_create_user(
             return user
 
         # ----------------------------------------------------
-        # Create a Telegram-only account
+        # Create Telegram-only account
         # ----------------------------------------------------
 
-        username = telegram_user.username
+        username = (
+            telegram_user.username
+        )
 
-        if username:
-            email = (
-                f"tg_{telegram_id}@edaaa.local"
-            )
-        else:
-            email = (
-                f"tg_{telegram_id}@edaaa.local"
-            )
+        email = (
+            f"tg_{telegram_id}@edaaa.local"
+        )
 
         # ----------------------------------------------------
-        # Avoid duplicate email
+        # Check existing email
         # ----------------------------------------------------
 
         existing = (
@@ -93,8 +94,14 @@ def get_or_create_user(
         )
 
         if existing:
-            existing.telegram_id = telegram_id
-            existing.telegram_username = username
+
+            existing.telegram_id = (
+                telegram_id
+            )
+
+            existing.telegram_username = (
+                username
+            )
 
             db.commit()
             db.refresh(existing)
@@ -111,6 +118,10 @@ def get_or_create_user(
             telegram_id
         )
 
+        # ----------------------------------------------------
+        # Create user
+        # ----------------------------------------------------
+
         user = User(
             email=email,
             password_hash=password_hash,
@@ -121,13 +132,91 @@ def get_or_create_user(
         )
 
         db.add(user)
+
         db.commit()
+
         db.refresh(user)
 
         return user
 
+    except Exception:
+
+        db.rollback()
+
+        logger.exception(
+            "Failed to get or create Telegram user."
+        )
+
+        raise
+
     finally:
+
         db.close()
+
+
+# ============================================================
+# MAIN MENU
+# ============================================================
+
+def build_main_menu():
+
+    keyboard = [
+
+        [
+            InlineKeyboardButton(
+                "💰 Кошелёк",
+                callback_data="wallet",
+            ),
+        ],
+
+        [
+            InlineKeyboardButton(
+                "📥 Депозит",
+                callback_data="deposit",
+            ),
+            InlineKeyboardButton(
+                "📤 Вывод",
+                callback_data="withdraw",
+            ),
+        ],
+
+        [
+            InlineKeyboardButton(
+                "💵 Купить USDT",
+                callback_data="buy_usdt",
+            ),
+            InlineKeyboardButton(
+                "💸 Продать USDT",
+                callback_data="sell_usdt",
+            ),
+        ],
+
+        [
+            InlineKeyboardButton(
+                "📊 История",
+                callback_data="history",
+            ),
+        ],
+
+        [
+            InlineKeyboardButton(
+                "👤 Профиль",
+                callback_data="profile",
+            ),
+        ],
+
+        [
+            InlineKeyboardButton(
+                "🆘 Поддержка",
+                callback_data="support",
+            ),
+        ],
+
+    ]
+
+    return InlineKeyboardMarkup(
+        keyboard
+    )
 
 
 # ============================================================
@@ -139,90 +228,47 @@ async def start(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    telegram_user = update.effective_user
+    telegram_user = (
+        update.effective_user
+    )
 
     if not telegram_user:
         return
 
     try:
+
         user = get_or_create_user(
             telegram_user
         )
 
     except Exception:
+
         logger.exception(
-            "Failed to create Telegram user"
+            "Failed to create Telegram user."
         )
 
         if update.message:
+
             await update.message.reply_text(
-                "❌ Произошла ошибка при создании аккаунта."
+                "❌ Произошла ошибка при "
+                "создании аккаунта."
             )
 
         return
 
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "💰 Кошелёк",
-                callback_data="wallet",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📥 Депозит",
-                callback_data="deposit",
-            ),
-            InlineKeyboardButton(
-                "📤 Вывод",
-                callback_data="withdraw",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "💵 Купить USDT",
-                callback_data="buy_usdt",
-            ),
-            InlineKeyboardButton(
-                "💸 Продать USDT",
-                callback_data="sell_usdt",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📊 История",
-                callback_data="history",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "👤 Профиль",
-                callback_data="profile",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🆘 Поддержка",
-                callback_data="support",
-            ),
-        ],
-    ]
-
-    reply_markup = InlineKeyboardMarkup(
-        keyboard
-    )
-
     text = (
-        "👋 Добро пожаловать в Edaaa Wallet!\n\n"
-        f"ID: `{user.id}`\n\n"
+        "👋 <b>Добро пожаловать "
+        "в Edaaa Wallet!</b>\n\n"
+        f"🆔 ID: <code>{user.id}</code>\n\n"
         "Выберите действие:"
     )
 
     if update.message:
+
         await update.message.reply_text(
             text,
-            reply_markup=reply_markup,
-            parse_mode="Markdown",
+            reply_markup=build_main_menu(),
+            parse_mode="HTML",
         )
 
 
@@ -234,59 +280,11 @@ async def show_menu(
     query,
 ):
 
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "💰 Кошелёк",
-                callback_data="wallet",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📥 Депозит",
-                callback_data="deposit",
-            ),
-            InlineKeyboardButton(
-                "📤 Вывод",
-                callback_data="withdraw",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "💵 Купить USDT",
-                callback_data="buy_usdt",
-            ),
-            InlineKeyboardButton(
-                "💸 Продать USDT",
-                callback_data="sell_usdt",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📊 История",
-                callback_data="history",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "👤 Профиль",
-                callback_data="profile",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🆘 Поддержка",
-                callback_data="support",
-            ),
-        ],
-    ]
-
     await query.edit_message_text(
-        "🏠 Главное меню\n\n"
+        "🏠 <b>Главное меню</b>\n\n"
         "Выберите действие:",
-        reply_markup=InlineKeyboardMarkup(
-            keyboard
-        ),
+        reply_markup=build_main_menu(),
+        parse_mode="HTML",
     )
 
 
@@ -320,10 +318,6 @@ async def wallet(
 
             return
 
-        # ----------------------------------------------------
-        # Import here to avoid circular imports
-        # ----------------------------------------------------
-
         from app.wallet_models import Wallet
 
         wallets = (
@@ -331,6 +325,9 @@ async def wallet(
             .filter(
                 Wallet.user_id
                 == user.id
+            )
+            .order_by(
+                Wallet.id.asc()
             )
             .all()
         )
@@ -345,31 +342,42 @@ async def wallet(
         else:
 
             lines = [
-                "💰 <b>Ваши кошельки</b>\n"
+                "💰 <b>Ваши кошельки</b>",
+                "",
             ]
 
             for wallet_obj in wallets:
 
-                address = wallet_obj.address
-
                 lines.append(
                     f"🌐 Сеть: "
-                    f"{wallet_obj.network}\n"
-                    f"📍 Адрес:\n"
-                    f"<code>{address}</code>\n"
+                    f"<b>{wallet_obj.network}</b>"
                 )
+
+                lines.append(
+                    "📍 Адрес:"
+                )
+
+                lines.append(
+                    f"<code>"
+                    f"{wallet_obj.address}"
+                    f"</code>"
+                )
+
+                lines.append("")
 
             text = "\n".join(
                 lines
             )
 
         keyboard = [
+
             [
                 InlineKeyboardButton(
                     "⬅️ Назад",
                     callback_data="menu",
                 )
             ]
+
         ]
 
         await query.edit_message_text(
@@ -381,6 +389,7 @@ async def wallet(
         )
 
     finally:
+
         db.close()
 
 
@@ -422,6 +431,9 @@ async def deposit(
                 Wallet.user_id
                 == user.id
             )
+            .order_by(
+                Wallet.id.asc()
+            )
             .first()
         )
 
@@ -435,22 +447,23 @@ async def deposit(
 
         text = (
             "📥 <b>Депозит</b>\n\n"
-            "Отправьте ETH или поддерживаемый "
-            "актив на адрес:\n\n"
+            "Отправьте ETH на адрес:\n\n"
             f"<code>{wallet_obj.address}</code>\n\n"
-            "🌐 Сеть: "
+            f"🌐 Сеть: "
             f"<b>{wallet_obj.network}</b>\n\n"
-            "⚠️ Отправляйте средства только "
-            "через указанную сеть."
+            "⚠️ Отправляйте средства "
+            "только через указанную сеть."
         )
 
         keyboard = [
+
             [
                 InlineKeyboardButton(
                     "⬅️ Назад",
                     callback_data="menu",
                 )
             ]
+
         ]
 
         await query.edit_message_text(
@@ -462,6 +475,7 @@ async def deposit(
         )
 
     finally:
+
         db.close()
 
 
@@ -474,17 +488,20 @@ async def withdraw(
 ):
 
     keyboard = [
+
         [
             InlineKeyboardButton(
                 "⬅️ Назад",
                 callback_data="menu",
             )
         ]
+
     ]
 
     await query.edit_message_text(
         "📤 <b>Вывод</b>\n\n"
-        "Функция вывода находится в разработке.",
+        "Функция вывода находится "
+        "в разработке.",
         reply_markup=InlineKeyboardMarkup(
             keyboard
         ),
@@ -493,7 +510,7 @@ async def withdraw(
 
 
 # ============================================================
-# BUY
+# BUY USDT
 # ============================================================
 
 async def buy_usdt(
@@ -501,12 +518,14 @@ async def buy_usdt(
 ):
 
     keyboard = [
+
         [
             InlineKeyboardButton(
                 "⬅️ Назад",
                 callback_data="menu",
             )
         ]
+
     ]
 
     await query.edit_message_text(
@@ -521,7 +540,7 @@ async def buy_usdt(
 
 
 # ============================================================
-# SELL
+# SELL USDT
 # ============================================================
 
 async def sell_usdt(
@@ -529,12 +548,14 @@ async def sell_usdt(
 ):
 
     keyboard = [
+
         [
             InlineKeyboardButton(
                 "⬅️ Назад",
                 callback_data="menu",
             )
         ]
+
     ]
 
     await query.edit_message_text(
@@ -579,7 +600,9 @@ async def history(
             return
 
         from app.wallet_models import Wallet
-        from app.transaction_models import Transaction
+        from app.transaction_models import (
+            Transaction,
+        )
 
         wallets = (
             db.query(Wallet)
@@ -628,7 +651,8 @@ async def history(
             else:
 
                 lines = [
-                    "📊 <b>Последние операции</b>\n"
+                    "📊 <b>Последние операции</b>",
+                    "",
                 ]
 
                 for tx in transactions:
@@ -645,12 +669,14 @@ async def history(
                 )
 
         keyboard = [
+
             [
                 InlineKeyboardButton(
                     "⬅️ Назад",
                     callback_data="menu",
                 )
             ]
+
         ]
 
         await query.edit_message_text(
@@ -662,6 +688,7 @@ async def history(
         )
 
     finally:
+
         db.close()
 
 
@@ -703,22 +730,27 @@ async def profile(
 
         text = (
             "👤 <b>Профиль</b>\n\n"
-            f"🆔 ID: <code>{user.id}</code>\n"
+            f"🆔 ID: "
+            f"<code>{user.id}</code>\n"
             f"📱 Telegram: "
             f"<code>{user.telegram_id}</code>\n"
-            f"👤 Username: {username}\n"
-            f"📧 Email: {user.email}\n\n"
+            f"👤 Username: "
+            f"{username}\n"
+            f"📧 Email: "
+            f"{user.email}\n\n"
             f"📅 Регистрация: "
             f"{user.created_at}"
         )
 
         keyboard = [
+
             [
                 InlineKeyboardButton(
                     "⬅️ Назад",
                     callback_data="menu",
                 )
             ]
+
         ]
 
         await query.edit_message_text(
@@ -730,6 +762,7 @@ async def profile(
         )
 
     finally:
+
         db.close()
 
 
@@ -747,12 +780,14 @@ async def support(
     ] = True
 
     keyboard = [
+
         [
             InlineKeyboardButton(
                 "⬅️ Назад",
                 callback_data="menu",
             )
         ]
+
     ]
 
     await query.edit_message_text(
@@ -782,12 +817,16 @@ async def support_message(
     ):
         return
 
-    telegram_user = update.effective_user
+    telegram_user = (
+        update.effective_user
+    )
 
     if not telegram_user:
         return
 
-    message = update.effective_message
+    message = (
+        update.effective_message
+    )
 
     if not message:
         return
@@ -796,11 +835,6 @@ async def support_message(
 
     if not text:
         return
-
-    # ========================================================
-    # ВАЖНО:
-    # Используем SessionLocal(), а НЕ get_db().
-    # ========================================================
 
     db = SessionLocal()
 
@@ -817,15 +851,47 @@ async def support_message(
 
         if not user:
 
-            user = get_or_create_user(
-                telegram_user
+            # ------------------------------------------------
+            # Создаём пользователя прямо в этой сессии.
+            # Не открываем вторую SessionLocal().
+            # ------------------------------------------------
+
+            telegram_id = str(
+                telegram_user.id
             )
 
+            username = (
+                telegram_user.username
+            )
+
+            email = (
+                f"tg_{telegram_id}@edaaa.local"
+            )
+
+            from app.auth import hash_password
+
+            user = User(
+                email=email,
+                password_hash=hash_password(
+                    telegram_id
+                ),
+                telegram_id=telegram_id,
+                telegram_username=username,
+                is_active=True,
+                is_admin=False,
+            )
+
+            db.add(user)
+
+            db.flush()
+
         # ----------------------------------------------------
-        # Create support ticket
+        # Support ticket
         # ----------------------------------------------------
 
-        from app.support_models import SupportTicket
+        from app.support_models import (
+            SupportTicket,
+        )
 
         ticket = SupportTicket(
             user_id=user.id,
@@ -834,7 +900,9 @@ async def support_message(
         )
 
         db.add(ticket)
+
         db.commit()
+
         db.refresh(ticket)
 
         context.user_data[
@@ -842,9 +910,11 @@ async def support_message(
         ] = False
 
         await message.reply_text(
-            "✅ Сообщение отправлено "
-            "в поддержку.\n\n"
-            f"Номер обращения: #{ticket.id}"
+            "✅ <b>Сообщение отправлено "
+            "в поддержку.</b>\n\n"
+            f"Номер обращения: "
+            f"#{ticket.id}",
+            parse_mode="HTML",
         )
 
     except Exception:
@@ -852,12 +922,13 @@ async def support_message(
         db.rollback()
 
         logger.exception(
-            "Failed to create support ticket"
+            "Failed to create support ticket."
         )
 
         await message.reply_text(
             "❌ Не удалось отправить сообщение "
-            "в поддержку. Попробуйте ещё раз."
+            "в поддержку.\n\n"
+            "Попробуйте ещё раз."
         )
 
     finally:
@@ -866,7 +937,7 @@ async def support_message(
 
 
 # ============================================================
-# CALLBACKS
+# CALLBACK HANDLER
 # ============================================================
 
 async def button_handler(
@@ -990,18 +1061,27 @@ async def error_handler(
 ):
 
     logger.error(
-        "Telegram bot error",
+        "Telegram bot error.",
         exc_info=context.error,
     )
 
 
 # ============================================================
-# APPLICATION
+# CREATE TELEGRAM APPLICATION
 # ============================================================
 
-def create_bot_application(
-    token: str,
-):
+def create_telegram_application():
+
+    token = (
+        settings.TELEGRAM_BOT_TOKEN
+    )
+
+    if not token:
+
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN "
+            "is not configured."
+        )
 
     application = (
         Application.builder()
@@ -1010,7 +1090,7 @@ def create_bot_application(
     )
 
     # --------------------------------------------------------
-    # Commands
+    # /start
     # --------------------------------------------------------
 
     application.add_handler(
@@ -1031,7 +1111,7 @@ def create_bot_application(
     )
 
     # --------------------------------------------------------
-    # Support messages
+    # Text messages
     # --------------------------------------------------------
 
     application.add_handler(
@@ -1043,8 +1123,54 @@ def create_bot_application(
     )
 
     # --------------------------------------------------------
-    # Errors
+    # Error handler
     # --------------------------------------------------------
+
+    application.add_error_handler(
+        error_handler
+    )
+
+    logger.info(
+        "Telegram application created successfully."
+    )
+
+    return application
+
+
+# ============================================================
+# BACKWARD COMPATIBILITY
+# ============================================================
+
+def create_bot_application(
+    token: str,
+):
+
+    application = (
+        Application.builder()
+        .token(token)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start,
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            support_message,
+        )
+    )
 
     application.add_error_handler(
         error_handler
@@ -1061,8 +1187,10 @@ async def run_bot(
     token: str,
 ):
 
-    application = create_bot_application(
-        token
+    application = (
+        create_bot_application(
+            token
+        )
     )
 
     logger.info(
@@ -1072,6 +1200,12 @@ async def run_bot(
     await application.initialize()
 
     await application.start()
+
+    if application.updater is None:
+
+        raise RuntimeError(
+            "Telegram updater is not available."
+        )
 
     await application.updater.start_polling(
         allowed_updates=Update.ALL_TYPES
@@ -1083,11 +1217,13 @@ async def run_bot(
 
     try:
 
-        # Keep the bot alive.
         import asyncio
 
         while True:
-            await asyncio.sleep(3600)
+
+            await asyncio.sleep(
+                3600
+            )
 
     finally:
 
@@ -1095,7 +1231,13 @@ async def run_bot(
             "Stopping Edaaa Telegram bot..."
         )
 
-        await application.updater.stop()
+        if application.updater:
+
+            await (
+                application
+                .updater
+                .stop()
+            )
 
         await application.stop()
 
